@@ -1,0 +1,15 @@
+[package]
+name = "sharded-nas-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bidiff = "1"
+serde = "1"
+serde_json = "1"
+serde_derive = "1"
+tokio = { version = "1", features = ["full"] }
+ordinalizer = { git = "https://github.com/terrarier2111/ordinalize/" }
+anyhow = "1"
+uuid = "1"
+bytes = "1"
