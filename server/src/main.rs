@@ -1,14 +1,28 @@
-use std::{fs, sync::{atomic::{AtomicBool, Ordering}, Arc}, thread, time::Duration};
+use std::{
+    fs,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 
-use clitty::{core::{CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal, UsageBuilder}, ui::{CLIBuilder, CmdLineInterface}};
+use clitty::{
+    core::{
+        CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal,
+        UsageBuilder,
+    },
+    ui::{CLIBuilder, CmdLineInterface},
+};
 use config::{Config, MetaCfg};
 use network::NetworkServer;
 use swap_it::SwapIt;
 
-mod protocol;
-mod packet;
-mod network;
 mod config;
+mod network;
+mod packet;
+mod protocol;
 mod utils;
 
 pub type Token = Vec<u8>;
@@ -17,9 +31,51 @@ pub type Token = Vec<u8>;
 async fn main() {
     fs::create_dir_all("./nas").unwrap();
     let cfg = Config::load();
-    let window = CLIBuilder::new().prompt("SharedNAS: ".to_string()).command(CommandBuilder::new("tokens", CmdTokens).params(UsageBuilder::new().required(CommandParam { name: "action", ty: CommandParamTy::Enum(clitty::core::CmdParamEnumConstraints::IgnoreCase(vec![("register", EnumVal::Simple(CommandParamTy::String(CmdParamStrConstraints::None))), ("unregister", EnumVal::Complex(UsageBuilder::new().required(CommandParam { name: "token", ty: CommandParamTy::String(CmdParamStrConstraints::None) }).optional(CommandParam { name: "delete", ty: CommandParamTy::String(CmdParamStrConstraints::None) })))])) }))).build();
+    let window = CLIBuilder::new()
+        .prompt("SharedNAS: ".to_string())
+        .command(
+            CommandBuilder::new("tokens", CmdTokens).params(
+                UsageBuilder::new().required(CommandParam {
+                    name: "action",
+                    ty: CommandParamTy::Enum(clitty::core::CmdParamEnumConstraints::IgnoreCase(
+                        vec![
+                            (
+                                "register",
+                                EnumVal::Simple(CommandParamTy::String(
+                                    CmdParamStrConstraints::None,
+                                )),
+                            ),
+                            (
+                                "unregister",
+                                EnumVal::Complex(
+                                    UsageBuilder::new()
+                                        .required(CommandParam {
+                                            name: "token",
+                                            ty: CommandParamTy::String(
+                                                CmdParamStrConstraints::None,
+                                            ),
+                                        })
+                                        .optional(CommandParam {
+                                            name: "delete",
+                                            ty: CommandParamTy::String(
+                                                CmdParamStrConstraints::None,
+                                            ),
+                                        }),
+                                ),
+                            ),
+                        ],
+                    )),
+                }),
+            ),
+        )
+        .build();
     let cli = Arc::new(CmdLineInterface::new(window));
-    let server = Arc::new(Server { running: AtomicBool::new(false), network: NetworkServer::new(cfg.port).await, cfg: SwapIt::new(cfg), cli: cli.clone() });
+    let server = Arc::new(Server {
+        running: AtomicBool::new(false),
+        network: NetworkServer::new(cfg.port).await,
+        cfg: SwapIt::new(cfg),
+        cli: cli.clone(),
+    });
     server.network.listen_login(server.clone()).await;
     let srv = server.clone();
     thread::spawn(move || {
@@ -41,7 +97,6 @@ pub struct Server {
 }
 
 impl Server {
-
     pub fn update_cfg(&self, cfg: Config) {
         self.cfg.store(cfg.clone());
         fs::write("./nas/config.json", serde_json::to_string(&cfg).unwrap()).unwrap();
@@ -63,7 +118,6 @@ impl Server {
     pub fn println(&self, msg: &str) {
         self.cli.println(msg);
     }
-
 }
 
 struct CmdTokens;
@@ -81,15 +135,23 @@ impl CommandImpl for CmdTokens {
                 }
                 ctx.println("Creating file structure...");
                 fs::create_dir_all(format!("./nas/instances/{}/storage", input[1])).unwrap();
-                fs::write(format!("./nas/instances/{}/meta.json", input[1]), serde_json::to_string(&MetaCfg { last_updates: vec![] }).unwrap().as_bytes()).unwrap();
+                fs::write(
+                    format!("./nas/instances/{}/meta.json", input[1]),
+                    serde_json::to_string(&MetaCfg {
+                        last_updates: vec![],
+                    })
+                    .unwrap()
+                    .as_bytes(),
+                )
+                .unwrap();
                 ctx.println("Adding token...");
                 let mut meta = ctx.cfg.load().clone();
                 meta.tokens.insert(token);
                 ctx.update_cfg(meta);
-                
+
                 ctx.println("Created token successfully");
                 Ok(())
-            },
+            }
             "unregister" => {
                 let token = token_from_str(input[1]);
                 let delete = input.get(2).unwrap_or(&"false").parse::<bool>()?;
@@ -107,7 +169,7 @@ impl CommandImpl for CmdTokens {
                 }
                 ctx.println("Deleted token successfully");
                 Ok(())
-            },
+            }
             "list" => {
                 let cfg = ctx.cfg.load();
                 ctx.println(&format!("Tokens ({}):", cfg.tokens.len()));
@@ -116,7 +178,7 @@ impl CommandImpl for CmdTokens {
                     ctx.println(&format!("{}", token_str));
                 }
                 Ok(())
-            },
+            }
             _ => unreachable!(),
         }
     }

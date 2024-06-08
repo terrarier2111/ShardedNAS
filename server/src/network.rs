@@ -1,10 +1,29 @@
-use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
+use std::{
+    fs,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    ops::DerefMut,
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use bytes::BytesMut;
 use swap_it::SwapIt;
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::Mutex};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
+};
 
-use crate::{config::MetaCfg, packet::{read_full_packet, PacketIn, PacketOut, PushResponse}, protocol::RWBytes, utils::current_time_millis, Server, Token};
+use crate::{
+    config::MetaCfg,
+    packet::{read_full_packet, PacketIn, PacketOut, PushResponse},
+    protocol::RWBytes,
+    utils::current_time_millis,
+    Server, Token,
+};
 
 pub struct NetworkServer {
     server: Mutex<TcpListener>,
@@ -12,10 +31,13 @@ pub struct NetworkServer {
 }
 
 impl NetworkServer {
-
     pub async fn new(port: u16) -> Self {
         Self {
-            server: Mutex::new(TcpListener::bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))).await.unwrap()),
+            server: Mutex::new(
+                TcpListener::bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)))
+                    .await
+                    .unwrap(),
+            ),
             clients: Mutex::new(vec![]),
         }
     }
@@ -25,16 +47,21 @@ impl NetworkServer {
             while server.is_running() {
                 match server.network.server.lock().await.accept().await {
                     Ok((client, addr)) => {
-                        PendingConn { server: server.clone(), conn: client, addr }.await_login().await;
-                    },
+                        PendingConn {
+                            server: server.clone(),
+                            conn: client,
+                            addr,
+                        }
+                        .await_login()
+                        .await;
+                    }
                     Err(err) => {
                         server.println(&format!("error listening for connections {err}"));
-                    },
+                    }
                 }
             }
         });
     }
-
 }
 
 const IDLE_TRANSMISSION: usize = usize::MAX;
@@ -48,7 +75,6 @@ struct Connection {
 }
 
 impl Connection {
-
     async fn send_packet(&self, packet: PacketOut) -> anyhow::Result<()> {
         let mut buf = BytesMut::new();
         packet.write(&mut buf)?;
@@ -72,17 +98,20 @@ impl Connection {
         tokio::spawn(async move {
             // FIXME: terminate on server shutdown
             loop {
-                let packet = read_full_packet(conn.lock().await.deref_mut()).await.unwrap();
+                let packet = read_full_packet(conn.lock().await.deref_mut())
+                    .await
+                    .unwrap();
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
                     PacketIn::PushResponse { response } => match response {
                         PushResponse::CompletedTransmission => {
                             let mut cfg = self.cfg.load().clone();
-                            cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] = current_time_millis();
+                            cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] =
+                                current_time_millis();
                             // FIXME: write cfg back to disk
-                        },
+                        }
                         // FIXME: handle other cases
-                        _ => {},
+                        _ => {}
                     },
                     PacketIn::PushRequest => todo!(),
                     PacketIn::DeliverFrame { file_name, content } => {
@@ -91,22 +120,32 @@ impl Connection {
                             return;
                         }
                         if let Some(parent) = Path::new(&file_name).parent() {
-                            fs::create_dir_all(format!("./nas/instances/{}/storage/{:?}", &id_str, parent)).unwrap();
+                            fs::create_dir_all(format!(
+                                "./nas/instances/{}/storage/{:?}",
+                                &id_str, parent
+                            ))
+                            .unwrap();
                         }
-                        let tmp_path = format!("./nas/tmp/{}_{}", &id_str, Path::new(&file_name).file_name().map(|name| name.to_str().unwrap()).unwrap_or(file_name.as_str()));
+                        let tmp_path = format!(
+                            "./nas/tmp/{}_{}",
+                            &id_str,
+                            Path::new(&file_name)
+                                .file_name()
+                                .map(|name| name.to_str().unwrap())
+                                .unwrap_or(file_name.as_str())
+                        );
                         fs::write(&tmp_path, content).unwrap();
                         // replace original file
                         fs::copy(&tmp_path, &file_name).unwrap();
                         // clean up tmp file
                         fs::remove_file(&tmp_path).unwrap();
-                        
+
                         self.send_packet(PacketOut::RequestFrame).await.unwrap();
-                    },
+                    }
                 }
             }
         });
     }
-
 }
 
 struct PendingConn {
@@ -116,13 +155,13 @@ struct PendingConn {
 }
 
 impl PendingConn {
-
     async fn await_login(mut self) {
         tokio::spawn(async move {
             let login = read_full_packet(&mut self.conn).await.unwrap();
             if let PacketIn::Login { token } = login {
                 if !self.server.is_trusted(&token) {
-                    self.server.println("Client with untrusted token tried logging in");
+                    self.server
+                        .println("Client with untrusted token tried logging in");
                     // FIXME: block ip for some time (a couple seconds) to prevent guessing a correct token through brute force
                     return;
                 }
@@ -133,14 +172,25 @@ impl PendingConn {
                     }
                     res
                 };
-                let cfg = serde_json::from_str(&fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str)).unwrap()).unwrap();
-                self.server.network.clients.lock().await.push(Connection { id: token, conn: Arc::new(Mutex::new(self.conn)), addr: self.addr, cfg: SwapIt::new(cfg), curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION) });
-                self.server.println(&format!("Client {} connected", token_str));
+                let cfg = serde_json::from_str(
+                    &fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str))
+                        .unwrap(),
+                )
+                .unwrap();
+                self.server.network.clients.lock().await.push(Connection {
+                    id: token,
+                    conn: Arc::new(Mutex::new(self.conn)),
+                    addr: self.addr,
+                    cfg: SwapIt::new(cfg),
+                    curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
+                });
+                self.server
+                    .println(&format!("Client {} connected", token_str));
             } else {
-                self.server.println("Unexpected packet received during login");
+                self.server
+                    .println("Unexpected packet received during login");
                 return;
             }
         });
     }
-
 }

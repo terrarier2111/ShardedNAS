@@ -315,9 +315,7 @@ impl<T: RWBytes<Ty = V>, V> RWBytes for Option<T> {
     fn write(&self, dst: &mut BytesMut) -> anyhow::Result<()> {
         // <Self as T>::write(self, dst)
         match self {
-            None => {
-                bool::write(&false, dst)
-            }
+            None => bool::write(&false, dst),
             Some(val) => {
                 bool::write(&true, dst)?;
                 val.write(dst)

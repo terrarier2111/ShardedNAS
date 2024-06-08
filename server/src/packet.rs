@@ -19,17 +19,10 @@ pub async fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> 
 #[derive(Ordinal)]
 #[repr(u8)]
 pub enum PacketIn {
-    Login {
-        token: Token,
-    } = 0x0,
-    PushResponse {
-        response: PushResponse,
-    } = 0x1,
+    Login { token: Token } = 0x0,
+    PushResponse { response: PushResponse } = 0x1,
     PushRequest = 0x2,
-    DeliverFrame {
-        file_name: String,
-        content: Vec<u8>,
-    } = 0x3,
+    DeliverFrame { file_name: String, content: Vec<u8> } = 0x3,
 }
 
 impl RWBytes for PacketIn {
@@ -38,10 +31,17 @@ impl RWBytes for PacketIn {
     fn read(src: &mut bytes::Bytes) -> anyhow::Result<Self::Ty> {
         let ord = src.get_u8();
         match ord {
-            0x0 => Ok(Self::Login { token: Vec::<u8>::read(src)? }),
-            0x1 => Ok(Self::PushResponse { response: PushResponse::read(src)? }),
+            0x0 => Ok(Self::Login {
+                token: Vec::<u8>::read(src)?,
+            }),
+            0x1 => Ok(Self::PushResponse {
+                response: PushResponse::read(src)?,
+            }),
             0x2 => Ok(Self::PushRequest),
-            0x3 => Ok(Self::DeliverFrame { file_name: String::read(src)?, content: Vec::<u8>::read(src)? }),
+            0x3 => Ok(Self::DeliverFrame {
+                file_name: String::read(src)?,
+                content: Vec::<u8>::read(src)?,
+            }),
             _ => unreachable!("Unknown packet ordinal {ord}"),
         }
     }
@@ -55,7 +55,7 @@ impl RWBytes for PacketIn {
             PacketIn::DeliverFrame { file_name, content } => {
                 file_name.write(dst)?;
                 content.write(dst)
-            },
+            }
         }
     }
 }
@@ -92,9 +92,7 @@ impl RWBytes for PushResponse {
 #[repr(u8)]
 pub enum PacketOut {
     LoginSuccess = 0x0,
-    PushResponse {
-        accepted: bool,
-    } = 0x1,
+    PushResponse { accepted: bool } = 0x1,
     PushRequest = 0x2,
     RequestFrame = 0x3,
 }
@@ -106,7 +104,9 @@ impl RWBytes for PacketOut {
         let ord = src.get_u8();
         match ord {
             0x0 => Ok(Self::LoginSuccess),
-            0x1 => Ok(Self::PushResponse { accepted: bool::read(src)? }),
+            0x1 => Ok(Self::PushResponse {
+                accepted: bool::read(src)?,
+            }),
             0x2 => Ok(Self::PushRequest),
             0x3 => Ok(Self::RequestFrame),
             _ => unreachable!("Unknown packet ordinal {ord}"),

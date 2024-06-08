@@ -12,20 +12,23 @@ pub struct Config {
 }
 
 impl Config {
-
     const PATH: &str = "./nas/config.json";
 
     pub fn load() -> Self {
         if !Path::new(Self::PATH).exists() {
-            fs::write(Self::PATH, serde_json::to_string(&Config {
-                port: 28462,
-                tokens: HashSet::new(),
-                periods: vec![],
-            }).unwrap()).unwrap();
+            fs::write(
+                Self::PATH,
+                serde_json::to_string(&Config {
+                    port: 28462,
+                    tokens: HashSet::new(),
+                    periods: vec![],
+                })
+                .unwrap(),
+            )
+            .unwrap();
         }
         serde_json::from_str(&fs::read_to_string(Self::PATH).unwrap()).unwrap()
     }
-
 }
 
 #[derive(Clone, Serialize, Deserialize)]
