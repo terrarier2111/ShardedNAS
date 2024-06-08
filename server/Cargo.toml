@@ -13,3 +13,4 @@ ordinalizer = { git = "https://github.com/terrarier2111/ordinalize/" }
 anyhow = "1"
 uuid = "1"
 bytes = "1"
+swap_it = { git = "https://github.com/terrarier2111/SwapEbr" }
