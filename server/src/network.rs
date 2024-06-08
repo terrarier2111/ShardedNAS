@@ -1,4 +1,4 @@
-use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{atomic::AtomicUsize, Arc}};
+use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{atomic::{AtomicUsize, Ordering}, Arc}};
 
 use bytes::BytesMut;
 use swap_it::SwapIt;
@@ -28,7 +28,7 @@ impl NetworkServer {
                         PendingConn { server: server.clone(), conn: client, addr }.await_login().await;
                     },
                     Err(err) => {
-                        println!("error listening for connections {err}");
+                        server.println(&format!("error listening for connections {err}"));
                     },
                 }
             }
@@ -78,7 +78,7 @@ impl Connection {
                     PacketIn::PushResponse { response } => match response {
                         PushResponse::CompletedTransmission => {
                             let mut cfg = self.cfg.load().clone();
-                            cfg.last_updates[self.curr_trans_idx.load(std::sync::atomic::Ordering::Acquire)] = current_time_millis();
+                            cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] = current_time_millis();
                             // FIXME: write cfg back to disk
                         },
                         // FIXME: handle other cases
@@ -122,7 +122,7 @@ impl PendingConn {
             let login = read_full_packet(&mut self.conn).await.unwrap();
             if let PacketIn::Login { token } = login {
                 if !self.server.is_trusted(&token) {
-                    println!("Client with untrusted token tried logging in");
+                    self.server.println("Client with untrusted token tried logging in");
                     // FIXME: block ip for some time (a couple seconds) to prevent guessing a correct token through brute force
                     return;
                 }
@@ -135,9 +135,9 @@ impl PendingConn {
                 };
                 let cfg = serde_json::from_str(&fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str)).unwrap()).unwrap();
                 self.server.network.clients.lock().await.push(Connection { id: token, conn: Arc::new(Mutex::new(self.conn)), addr: self.addr, cfg: SwapIt::new(cfg), curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION) });
-                println!("Client {} connected", token_str);
+                self.server.println(&format!("Client {} connected", token_str));
             } else {
-                println!("Unexpected packet received during login");
+                self.server.println("Unexpected packet received during login");
                 return;
             }
         });

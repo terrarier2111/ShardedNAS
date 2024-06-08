@@ -4,7 +4,7 @@ use serde_derive::{Deserialize, Serialize};
 
 use crate::Token;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     pub port: u16,
     pub tokens: HashSet<Token>,
