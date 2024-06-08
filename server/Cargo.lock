@@ -92,7 +92,7 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 [[package]]
 name = "clitty"
 version = "0.1.0"
-source = "git+https://github.com/terrarier2111/CLItty#b10e4e07fe197c7b72f0bec8425b58bc5168e2aa"
+source = "git+https://github.com/terrarier2111/CLItty#0cdc9a20a62f91eed0ebd82a6387ac1cc2dfd77a"
 dependencies = [
  "anyhow",
  "crossterm",

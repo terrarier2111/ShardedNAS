@@ -13,7 +13,7 @@ use clitty::{
         CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal,
         UsageBuilder,
     },
-    ui::{CLIBuilder, CmdLineInterface},
+    ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
 use config::{Config, MetaCfg};
 use network::NetworkServer;
@@ -63,15 +63,20 @@ async fn main() {
                                         }),
                                 ),
                             ),
+                            (
+                                "list",
+                                EnumVal::None,
+                            )
                         ],
                     )),
                 }),
             ),
         )
+        .fallback(Box::new(PrintFallback::new("This command doesn't exist".to_string())))
         .build();
     let cli = Arc::new(CmdLineInterface::new(window));
     let server = Arc::new(Server {
-        running: AtomicBool::new(false),
+        running: AtomicBool::new(true),
         network: NetworkServer::new(cfg.port).await,
         cfg: SwapIt::new(cfg),
         cli: cli.clone(),
@@ -80,7 +85,14 @@ async fn main() {
     let srv = server.clone();
     thread::spawn(move || {
         let cli = cli;
-        cli.await_input(&srv).unwrap();
+        loop {
+            match cli.await_input(&srv) {
+                Ok(_) => {},
+                Err(err) => {
+                    cli.println(&format!("An CLI error occoured: {err}"));
+                },
+            }
+        }
     });
     while server.is_running() {
         thread::sleep(Duration::from_millis(50));
@@ -129,7 +141,7 @@ impl CommandImpl for CmdTokens {
         match input[0] {
             "register" => {
                 let token = token_from_str(input[1]);
-                if !ctx.is_trusted(&token) {
+                if ctx.is_trusted(&token) {
                     ctx.println(&format!("The token `{}` is already registerd", input[1]));
                     return Ok(());
                 }
