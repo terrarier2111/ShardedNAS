@@ -10,6 +10,7 @@ use std::{
 };
 
 use bytes::BytesMut;
+use clitty::core::CommandImpl;
 use swap_it::SwapIt;
 use tokio::{
     io::AsyncWriteExt,
@@ -108,7 +109,7 @@ impl Connection {
                             let mut cfg = self.cfg.load().clone();
                             cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] =
                                 current_time_millis();
-                            // FIXME: write cfg back to disk
+                            fs::write(format!("./nas/instances/{}/meta.json", &id_str), serde_json::to_string(&cfg).unwrap().as_bytes()).unwrap();
                         }
                         // FIXME: handle other cases
                         _ => {}

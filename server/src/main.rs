@@ -1,17 +1,13 @@
 use std::{
-    fs,
-    sync::{
+    fs, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
-    thread,
-    time::Duration,
+    }, thread, time::Duration
 };
 
 use clitty::{
     core::{
-        CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal,
-        UsageBuilder,
+        CmdParamEnumConstraints, CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal, UsageBuilder
     },
     ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
@@ -29,7 +25,7 @@ pub type Token = Vec<u8>;
 
 #[tokio::main]
 async fn main() {
-    fs::create_dir_all("./nas").unwrap();
+    fs::create_dir_all("./nas/tmp").unwrap();
     let cfg = Config::load();
     let window = CLIBuilder::new()
         .prompt("SharedNAS: ".to_string())
@@ -37,7 +33,7 @@ async fn main() {
             CommandBuilder::new("tokens", CmdTokens).params(
                 UsageBuilder::new().required(CommandParam {
                     name: "action",
-                    ty: CommandParamTy::Enum(clitty::core::CmdParamEnumConstraints::IgnoreCase(
+                    ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(
                         vec![
                             (
                                 "register",
@@ -72,6 +68,7 @@ async fn main() {
                 }),
             ),
         )
+        .command(CommandBuilder::new("help", CmdHelp))
         .fallback(Box::new(PrintFallback::new("This command doesn't exist".to_string())))
         .build();
     let cli = Arc::new(CmdLineInterface::new(window));
@@ -145,17 +142,19 @@ impl CommandImpl for CmdTokens {
                     ctx.println(&format!("The token `{}` is already registerd", input[1]));
                     return Ok(());
                 }
-                ctx.println("Creating file structure...");
-                fs::create_dir_all(format!("./nas/instances/{}/storage", input[1])).unwrap();
-                fs::write(
-                    format!("./nas/instances/{}/meta.json", input[1]),
-                    serde_json::to_string(&MetaCfg {
-                        last_updates: vec![],
-                    })
-                    .unwrap()
-                    .as_bytes(),
-                )
-                .unwrap();
+                if !Path::new(&format!("./nas/instances/{}/storage", input[1])).exists() {
+                    ctx.println("Creating file structure...");
+                    fs::create_dir_all(format!("./nas/instances/{}/storage", input[1])).unwrap();
+                    fs::write(
+                        format!("./nas/instances/{}/meta.json", input[1]),
+                        serde_json::to_string(&MetaCfg {
+                            last_updates: vec![],
+                        })
+                        .unwrap()
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                }
                 ctx.println("Adding token...");
                 let mut meta = ctx.cfg.load().clone();
                 meta.tokens.insert(token);
@@ -212,4 +211,19 @@ pub fn token_from_str(raw: &str) -> Token {
         out.push(part.parse::<u8>().unwrap());
     }
     out
+}
+
+struct CmdHelp;
+
+impl CommandImpl for CmdHelp {
+    type CTX = Arc<Server>;
+
+    fn execute(&self, ctx: &Self::CTX, _input: &[&str]) -> anyhow::Result<()> {
+        ctx.println(&format!("Commands ({}):", ctx.cli.cmd_count()));
+        for cmd in ctx.cli.cmds() {
+            // FIXME: add parameter info to this list
+            ctx.println(&format!("{}", cmd.name()));
+        }
+        Ok(())
+    }
 }
