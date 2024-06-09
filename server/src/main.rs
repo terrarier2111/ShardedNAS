@@ -69,6 +69,7 @@ async fn main() {
             ),
         )
         .command(CommandBuilder::new("help", CmdHelp))
+        .command(CommandBuilder::new("connections", CmdConnections))
         .fallback(Box::new(PrintFallback::new("This command doesn't exist".to_string())))
         .build();
     let cli = Arc::new(CmdLineInterface::new(window));
@@ -223,6 +224,21 @@ impl CommandImpl for CmdHelp {
         for cmd in ctx.cli.cmds() {
             // FIXME: add parameter info to this list
             ctx.println(&format!("{}", cmd.name()));
+        }
+        Ok(())
+    }
+}
+
+struct CmdConnections;
+
+impl CommandImpl for CmdConnections {
+    type CTX = Arc<Server>;
+
+    fn execute(&self, ctx: &Self::CTX, _input: &[&str]) -> anyhow::Result<()> {
+        let clients = ctx.network.clients.blocking_lock();
+        ctx.println(&format!("Connections ({}):", clients.len()));
+        for conn in clients.iter() {
+            ctx.println(&format!("{}: {}", token_to_str(&conn.id), conn.addr));
         }
         Ok(())
     }

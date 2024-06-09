@@ -28,7 +28,7 @@ use crate::{
 
 pub struct NetworkServer {
     server: Mutex<TcpListener>,
-    clients: Mutex<Vec<Connection>>,
+    pub clients: Mutex<Vec<Connection>>,
 }
 
 impl NetworkServer {
@@ -67,11 +67,11 @@ impl NetworkServer {
 
 const IDLE_TRANSMISSION: usize = usize::MAX;
 
-struct Connection {
-    id: Token,
+pub struct Connection {
+    pub id: Token,
     cfg: SwapIt<MetaCfg>,
     conn: Arc<Mutex<TcpStream>>,
-    addr: SocketAddr,
+    pub addr: SocketAddr,
     curr_trans_idx: AtomicUsize,
 }
 
