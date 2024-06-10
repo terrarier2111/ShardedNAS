@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, time::Duration};
 
 use serde_derive::{Deserialize, Serialize};
 
@@ -9,6 +9,8 @@ pub struct Config {
     pub port: u16,
     pub tokens: HashSet<Token>,
     pub periods: Vec<u128>, // these are stored in milli seconds
+    pub connect_timeout_ms: u64,
+    pub read_timeout_ms: u64,
 }
 
 impl Config {
@@ -21,7 +23,9 @@ impl Config {
                 serde_json::to_string(&Config {
                     port: 28462,
                     tokens: HashSet::new(),
-                    periods: vec![],
+                    periods: vec![Duration::from_days(1).as_millis(), Duration::from_days(30).as_millis(), Duration::from_days(365).as_millis()],
+                    connect_timeout_ms: 15000,
+                    read_timeout_ms: 30000,
                 })
                 .unwrap(),
             )
@@ -34,4 +38,5 @@ impl Config {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MetaCfg {
     pub last_updates: Vec<u128>,
+    pub pub_key: Vec<u8>,
 }

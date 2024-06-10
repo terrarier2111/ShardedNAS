@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use serde_derive::{Deserialize, Serialize};
 
@@ -22,4 +22,9 @@ impl Config {
         serde_json::from_str(&fs::read_to_string("./nas/meta.json").unwrap()).unwrap()
     }
 
+}
+
+pub struct Meta {
+    /// fingerprints of files that were already sent to the backup server
+    pub fingerprints: HashMap<String, u64>,
 }

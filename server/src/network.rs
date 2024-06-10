@@ -4,13 +4,14 @@ use std::{
     ops::DerefMut,
     path::Path,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
-    },
+    }, time::Duration,
 };
 
 use bytes::BytesMut;
-use clitty::core::CommandImpl;
+use rand::RngCore;
+use rsa::{pkcs1::DecodeRsaPublicKey, sha2::Sha256, Pss, RsaPublicKey};
 use swap_it::SwapIt;
 use tokio::{
     io::AsyncWriteExt,
@@ -19,11 +20,7 @@ use tokio::{
 };
 
 use crate::{
-    config::MetaCfg,
-    packet::{read_full_packet, PacketIn, PacketOut, PushResponse},
-    protocol::RWBytes,
-    utils::current_time_millis,
-    Server, Token,
+    binary_to_str, config::MetaCfg, packet::{read_full_packet, write_full_packet, PacketIn, PacketOut, PushResponse}, protocol::{RWBytes, PROTOCOL_VERSION}, utils::current_time_millis, Server, Token
 };
 
 pub struct NetworkServer {
@@ -73,29 +70,14 @@ pub struct Connection {
     conn: Arc<Mutex<TcpStream>>,
     pub addr: SocketAddr,
     curr_trans_idx: AtomicUsize,
+    last_keep_alive: AtomicU64,
 }
 
 impl Connection {
-    async fn send_packet(&self, packet: PacketOut) -> anyhow::Result<()> {
-        let mut buf = BytesMut::new();
-        packet.write(&mut buf)?;
-        let mut final_buf = BytesMut::new();
-        (buf.len() as u64).write(&mut final_buf)?;
-        final_buf.extend_from_slice(&buf);
-        self.conn.lock().await.write_all(&final_buf).await.unwrap();
-        Ok(())
-    }
-
     async fn handle_packets(self: Arc<Self>) {
         let conn = self.conn.clone();
         let id = self.id.clone();
-        let id_str = {
-            let mut res = String::new();
-            for id in id.iter() {
-                res.push_str(id.to_string().as_str());
-            }
-            res
-        };
+        let id_str = binary_to_str(&id);
         tokio::spawn(async move {
             // FIXME: terminate on server shutdown
             loop {
@@ -141,8 +123,12 @@ impl Connection {
                         // clean up tmp file
                         fs::remove_file(&tmp_path).unwrap();
 
-                        self.send_packet(PacketOut::RequestFrame).await.unwrap();
+                        write_full_packet(conn.lock().await.deref_mut(), PacketOut::RequestFrame).await.unwrap();
                     }
+                    PacketIn::ChallengeResponse { .. } => unreachable!("unexpected login challenge packet"),
+                    PacketIn::KeepAlive => {
+                        self.last_keep_alive.store(current_time_millis() as u64, Ordering::Release);
+                    },
                 }
             }
         });
@@ -158,32 +144,52 @@ struct PendingConn {
 impl PendingConn {
     async fn await_login(mut self) {
         tokio::spawn(async move {
-            let login = read_full_packet(&mut self.conn).await.unwrap();
-            if let PacketIn::Login { token } = login {
+            let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet(&mut self.conn)).await {
+                Ok(packet) => packet.unwrap(),
+                // a timeout occoured
+                Err(_) => return,
+            };
+            if let PacketIn::Login { token, version } = login {
+                if version != PROTOCOL_VERSION {
+                    self.server.println(&format!("A client tried to connect with an incompatible version ({})", version));
+                    return;
+                }
                 if !self.server.is_trusted(&token) {
                     self.server
                         .println("Client with untrusted token tried logging in");
                     // FIXME: block ip for some time (a couple seconds) to prevent guessing a correct token through brute force
                     return;
                 }
-                let token_str = {
-                    let mut res = String::new();
-                    for token in token.iter() {
-                        res.push_str(token.to_string().as_str());
-                    }
-                    res
-                };
-                let cfg = serde_json::from_str(
+                let token_str = binary_to_str(&token);
+                let cfg: MetaCfg = serde_json::from_str(
                     &fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str))
                         .unwrap(),
                 )
                 .unwrap();
+                let mut challenge = [0; 256];
+                rand::thread_rng().fill_bytes(&mut challenge);
+
+                write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }).await.unwrap();
+                
+                if let PacketIn::ChallengeResponse { val } = read_full_packet(&mut self.conn).await.unwrap() {
+                    let pub_key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
+                    if pub_key.verify(Pss::new::<Sha256>(), &challenge, &val).is_err() {
+                        // FIXME: block ip as it tried to immitate the token holder
+                        return;
+                    }
+                } else {
+                    self.server
+                    .println("Unexpected packet received during login");
+                return;
+                }
+
                 self.server.network.clients.lock().await.push(Connection {
                     id: token,
                     conn: Arc::new(Mutex::new(self.conn)),
                     addr: self.addr,
                     cfg: SwapIt::new(cfg),
                     curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
+                    last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                 });
                 self.server
                     .println(&format!("Client {} connected", token_str));

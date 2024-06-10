@@ -1,6 +1,6 @@
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use ordinalizer::Ordinal;
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 use crate::{protocol::RWBytes, Token};
 
@@ -16,13 +16,26 @@ pub async fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> 
     Ok(PacketIn::read(&mut packet_buf)?)
 }
 
+pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut) -> anyhow::Result<()> {
+    let mut buf = BytesMut::new();
+    packet.write(&mut buf)?;
+    let mut final_buf = BytesMut::new();
+    (buf.len() as u64).write(&mut final_buf)?;
+    final_buf.extend_from_slice(&buf);
+    conn.write_all(&final_buf).await.unwrap();
+    Ok(())
+}
+
 #[derive(Ordinal)]
 #[repr(u8)]
 pub enum PacketIn {
-    Login { token: Token } = 0x0,
-    PushResponse { response: PushResponse } = 0x1,
-    PushRequest = 0x2,
-    DeliverFrame { file_name: String, content: Vec<u8> } = 0x3,
+    Login { token: Token, version: u16 } = 0x0,
+    ChallengeResponse { val: Vec<u8>, } = 0x1,
+    KeepAlive = 0x2,
+    PushResponse { response: PushResponse } = 0x3,
+    PushRequest = 0x4,
+    DeliverFrame { file_name: String, content: Vec<u8> } = 0x5,
+
 }
 
 impl RWBytes for PacketIn {
@@ -33,6 +46,7 @@ impl RWBytes for PacketIn {
         match ord {
             0x0 => Ok(Self::Login {
                 token: Vec::<u8>::read(src)?,
+                version: u16::read(src)?,
             }),
             0x1 => Ok(Self::PushResponse {
                 response: PushResponse::read(src)?,
@@ -49,13 +63,18 @@ impl RWBytes for PacketIn {
     fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
         dst.put_u8(self.ordinal() as u8);
         match self {
-            PacketIn::Login { token } => token.write(dst),
+            PacketIn::Login { token, version } => {
+                token.write(dst)?;
+                version.write(dst)
+            },
             PacketIn::PushResponse { response } => response.write(dst),
             PacketIn::PushRequest => Ok(()),
             PacketIn::DeliverFrame { file_name, content } => {
                 file_name.write(dst)?;
                 content.write(dst)
             }
+            PacketIn::ChallengeResponse { val } => val.write(dst),
+            PacketIn::KeepAlive => Ok(()),
         }
     }
 }
@@ -91,10 +110,13 @@ impl RWBytes for PushResponse {
 #[derive(Ordinal)]
 #[repr(u8)]
 pub enum PacketOut {
-    LoginSuccess = 0x0,
-    PushResponse { accepted: bool } = 0x1,
-    PushRequest = 0x2,
-    RequestFrame = 0x3,
+    ChallengeRequest { challenge: Vec<u8> } = 0x0,
+    LoginSuccess = 0x1,
+    KeepAlive = 0x2,
+    /// responds to the clients request to start sending updates
+    PushResponse { accepted: bool } = 0x3,
+    /// request the next frame from the client
+    RequestFrame = 0x4,
 }
 
 impl RWBytes for PacketOut {
@@ -103,11 +125,11 @@ impl RWBytes for PacketOut {
     fn read(src: &mut bytes::Bytes) -> anyhow::Result<Self::Ty> {
         let ord = src.get_u8();
         match ord {
-            0x0 => Ok(Self::LoginSuccess),
-            0x1 => Ok(Self::PushResponse {
+            0x0 => Ok(Self::PushResponse {
                 accepted: bool::read(src)?,
             }),
-            0x2 => Ok(Self::PushRequest),
+            0x1 => Ok(Self::LoginSuccess),
+            0x2 => Ok(Self::PushResponse { accepted: bool::read(src)? }),
             0x3 => Ok(Self::RequestFrame),
             _ => unreachable!("Unknown packet ordinal {ord}"),
         }
@@ -119,8 +141,9 @@ impl RWBytes for PacketOut {
         match self {
             PacketOut::LoginSuccess => Ok(()),
             PacketOut::PushResponse { accepted } => accepted.write(dst),
-            PacketOut::PushRequest => Ok(()),
+            PacketOut::ChallengeRequest { challenge } => challenge.write(dst),
             PacketOut::RequestFrame => Ok(()),
+            PacketOut::KeepAlive => Ok(()),            
         }
     }
 }

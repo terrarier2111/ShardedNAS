@@ -1,3 +1,5 @@
+#![feature(duration_constructors)]
+
 use std::{
     fs, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
@@ -13,6 +15,8 @@ use clitty::{
 };
 use config::{Config, MetaCfg};
 use network::NetworkServer;
+use rand::{thread_rng, Rng};
+use rsa::{pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey}, RsaPrivateKey, RsaPublicKey};
 use swap_it::SwapIt;
 
 mod config;
@@ -37,9 +41,7 @@ async fn main() {
                         vec![
                             (
                                 "register",
-                                EnumVal::Simple(CommandParamTy::String(
-                                    CmdParamStrConstraints::None,
-                                )),
+                                EnumVal::None,
                             ),
                             (
                                 "unregister",
@@ -112,6 +114,19 @@ impl Server {
         fs::write("./nas/config.json", serde_json::to_string(&cfg).unwrap()).unwrap();
     }
 
+    fn gen_token(&self) -> (Token, RsaPrivateKey) {
+        loop {
+            let token = rand::thread_rng().gen::<[u8; 32]>();
+            let token = Vec::from_iter(token);
+            if !self.is_trusted(&token) {
+                let mut rng = rand::thread_rng();
+                let bits = 4096;
+                let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+                return (token, priv_key);
+            }
+        }
+    }
+
     pub fn is_trusted(&self, token: &Token) -> bool {
         self.cfg.load().tokens.contains(token)
     }
@@ -138,18 +153,16 @@ impl CommandImpl for CmdTokens {
     fn execute(&self, ctx: &Self::CTX, input: &[&str]) -> anyhow::Result<()> {
         match input[0] {
             "register" => {
-                let token = token_from_str(input[1]);
-                if ctx.is_trusted(&token) {
-                    ctx.println(&format!("The token `{}` is already registerd", input[1]));
-                    return Ok(());
-                }
-                if !Path::new(&format!("./nas/instances/{}/storage", input[1])).exists() {
+                let (token, priv_key) = ctx.gen_token();
+                let token_str = binary_to_str(&token);
+                if !Path::new(&format!("./nas/instances/{}/storage", &token_str)).exists() {
                     ctx.println("Creating file structure...");
-                    fs::create_dir_all(format!("./nas/instances/{}/storage", input[1])).unwrap();
+                    fs::create_dir_all(format!("./nas/instances/{}/storage", &token_str)).unwrap();
                     fs::write(
-                        format!("./nas/instances/{}/meta.json", input[1]),
+                        format!("./nas/instances/{}/meta.json", &token_str),
                         serde_json::to_string(&MetaCfg {
                             last_updates: vec![],
+                            pub_key: priv_key.to_public_key().to_pkcs1_der().unwrap().into_vec(),
                         })
                         .unwrap()
                         .as_bytes(),
@@ -162,6 +175,9 @@ impl CommandImpl for CmdTokens {
                 ctx.update_cfg(meta);
 
                 ctx.println("Created token successfully");
+                ctx.println("The following information is needed by the client to be configured and will ONLY BE DEPLAYED ONCE");
+                ctx.println(&format!("Token: {}", &token_str));
+                ctx.println(&format!("Private key: {}", binary_to_str(&priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec())));
                 Ok(())
             }
             "unregister" => {
@@ -186,7 +202,7 @@ impl CommandImpl for CmdTokens {
                 let cfg = ctx.cfg.load();
                 ctx.println(&format!("Tokens ({}):", cfg.tokens.len()));
                 for token in cfg.tokens.iter() {
-                    let token_str = token_to_str(token);
+                    let token_str = binary_to_str(token);
                     ctx.println(&format!("{}", token_str));
                 }
                 Ok(())
@@ -196,7 +212,7 @@ impl CommandImpl for CmdTokens {
     }
 }
 
-pub fn token_to_str(token: &Token) -> String {
+pub fn binary_to_str(token: &Token) -> String {
     let mut raw = String::new();
     for num in token.iter() {
         raw.push_str(num.to_string().as_str());
@@ -238,7 +254,7 @@ impl CommandImpl for CmdConnections {
         let clients = ctx.network.clients.blocking_lock();
         ctx.println(&format!("Connections ({}):", clients.len()));
         for conn in clients.iter() {
-            ctx.println(&format!("{}: {}", token_to_str(&conn.id), conn.addr));
+            ctx.println(&format!("{}: {}", binary_to_str(&conn.id), conn.addr));
         }
         Ok(())
     }

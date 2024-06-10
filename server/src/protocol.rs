@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u16 = 1;
 
 pub(crate) trait RWBytes /*: Sized*/ {
     type Ty;
