@@ -13,7 +13,7 @@ use clitty::{
     },
     ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
-use config::{Config, MetaCfg};
+use config::{Config, MetaCfg, RegisterCfg};
 use network::NetworkServer;
 use rand::{thread_rng, Rng};
 use rsa::{pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey}, RsaPrivateKey, RsaPublicKey};
@@ -171,13 +171,12 @@ impl CommandImpl for CmdTokens {
                 }
                 ctx.println("Adding token...");
                 let mut meta = ctx.cfg.load().clone();
-                meta.tokens.insert(token);
+                meta.tokens.insert(token.clone());
                 ctx.update_cfg(meta);
 
-                ctx.println("Created token successfully");
-                ctx.println("The following information is needed by the client to be configured and will ONLY BE DEPLAYED ONCE");
-                ctx.println(&format!("Token: {}", &token_str));
-                ctx.println(&format!("Private key: {}", binary_to_str(&priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec())));
+                ctx.println(&format!("Created token {} successfully", &token_str));
+                ctx.println("The token information, needed by the client was written into a file at ./nas/tmp/registered.json");
+                fs::write("./nas/tmp/registered.json", serde_json::to_string(&RegisterCfg { priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(), token }).unwrap()).unwrap();
                 Ok(())
             }
             "unregister" => {

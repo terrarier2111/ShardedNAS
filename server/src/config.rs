@@ -40,3 +40,9 @@ pub struct MetaCfg {
     pub last_updates: Vec<u128>,
     pub pub_key: Vec<u8>,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct RegisterCfg {
+    pub priv_key: Vec<u8>,
+    pub token: Vec<u8>,
+}
