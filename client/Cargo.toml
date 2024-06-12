@@ -14,3 +14,4 @@ bytes = "1"
 swap_it = { git = "https://github.com/terrarier2111/SwapEbr" }
 clitty = { git = "https://github.com/terrarier2111/CLItty" }
 rsa = { version = "0.9", features = ["sha2"] }
+rand = "0.8"

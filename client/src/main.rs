@@ -5,7 +5,7 @@ use config::{Config, RegisterCfg};
 use network::NetworkClient;
 use packet::PacketIn;
 use protocol::PROTOCOL_VERSION;
-use rsa::{pkcs1::DecodeRsaPrivateKey, sha2::Sha256, Pss, RsaPrivateKey};
+use rsa::{pkcs1::DecodeRsaPrivateKey, sha2::{Digest, Sha256}, Pss, RsaPrivateKey};
 use swap_it::SwapIt;
 
 mod packet;
@@ -38,8 +38,12 @@ fn main() {
                 conn.write_packet(packet::PacketOut::Login { token: creds.token.clone(), version: PROTOCOL_VERSION, }).unwrap();
                 let packet = conn.read_packet();
                 if let PacketIn::ChallengeRequest { challenge } = packet.unwrap() {
-                    let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key).expect("Invalid private key").sign(Pss::new::<Sha256>(), &challenge).unwrap();
+                    let mut hasher = Sha256::new();
+                    hasher.update(&challenge);
+                    let hashed = hasher.finalize();
+                    let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key).expect("Invalid private key").sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha256>(), &hashed).unwrap();
                     conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed }).unwrap();
+                    println!("sent response");
                     if let Ok(PacketIn::LoginSuccess) = conn.read_packet() {
                         cli.println("Successfully logged in");
                     } else {

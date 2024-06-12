@@ -180,6 +180,8 @@ impl PendingConn {
                 if let PacketIn::ChallengeResponse { val } = read_full_packet(&mut self.conn).await.unwrap() {
                     let pub_key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
                     if pub_key.verify(Pss::new::<Sha256>(), &challenge, &val).is_err() {
+                        self.server
+                    .println("Failed challenge during login");
                         // FIXME: block ip as it tried to immitate the token holder
                         return;
                     }
@@ -188,6 +190,8 @@ impl PendingConn {
                     .println("Unexpected packet received during login");
                 return;
                 }
+
+                write_full_packet(&mut self.conn, PacketOut::LoginSuccess).await.unwrap();
 
                 self.server.network.clients.lock().await.push(Connection {
                     id: token,

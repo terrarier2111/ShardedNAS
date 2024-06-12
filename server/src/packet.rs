@@ -9,7 +9,7 @@ pub async fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> 
     conn.read_exact(&mut len_buf).await.unwrap();
     let mut id_buf = [0; 1];
     conn.read_exact(&mut id_buf).await.unwrap();
-    let len = u64::from_be_bytes(len_buf) as usize;
+    let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf).await.unwrap();
     let mut packet_buf = Bytes::from(packet_buf);

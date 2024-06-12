@@ -10,7 +10,7 @@ pub fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> {
     conn.read_exact(&mut len_buf).unwrap();
     let mut id_buf = [0; 1];
     conn.read_exact(&mut id_buf).unwrap();
-    let len = u64::from_be_bytes(len_buf) as usize;
+    let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf).unwrap();
     let mut packet_buf = Bytes::from(packet_buf);
@@ -117,8 +117,8 @@ impl RWBytes for PacketIn {
     fn read(src: &mut bytes::Bytes) -> anyhow::Result<Self::Ty> {
         let ord = src.get_u8();
         match ord {
-            0x0 => Ok(Self::PushResponse {
-                accepted: bool::read(src)?,
+            0x0 => Ok(Self::ChallengeRequest {
+                challenge: Vec::<u8>::read(src)?,
             }),
             0x1 => Ok(Self::LoginSuccess),
             0x2 => Ok(Self::KeepAlive),
