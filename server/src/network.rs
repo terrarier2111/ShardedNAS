@@ -133,6 +133,12 @@ impl Connection {
             }
         });
     }
+
+    async fn start_keep_alive(self: Arc<Self>, server: Arc<Server>) {
+        tokio::spawn(async move {
+            
+        });
+    }
 }
 
 struct PendingConn {
