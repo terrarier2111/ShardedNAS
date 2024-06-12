@@ -175,8 +175,8 @@ impl CommandImpl for CmdTokens {
                 ctx.update_cfg(meta);
 
                 ctx.println(&format!("Created token {} successfully", &token_str));
-                ctx.println("The token information, needed by the client was written into a file at ./nas/tmp/registered.json");
-                fs::write("./nas/tmp/registered.json", serde_json::to_string(&RegisterCfg { priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(), token }).unwrap()).unwrap();
+                ctx.println("The token information, needed by the client was written into a file at ./nas/tmp/credentials.json");
+                fs::write("./nas/tmp/credentials.json", serde_json::to_string(&RegisterCfg { priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(), token }).unwrap()).unwrap();
                 Ok(())
             }
             "unregister" => {

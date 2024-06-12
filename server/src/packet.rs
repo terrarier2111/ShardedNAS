@@ -21,6 +21,7 @@ pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut) -> anyho
     packet.write(&mut buf)?;
     let mut final_buf = BytesMut::new();
     (buf.len() as u64).write(&mut final_buf)?;
+    (packet.ordinal() as u8).write(&mut final_buf)?;
     final_buf.extend_from_slice(&buf);
     conn.write_all(&final_buf).await.unwrap();
     Ok(())
@@ -48,11 +49,13 @@ impl RWBytes for PacketIn {
                 token: Vec::<u8>::read(src)?,
                 version: u16::read(src)?,
             }),
-            0x1 => Ok(Self::PushResponse {
+            0x1 => Ok(Self::ChallengeResponse { val: Vec::<u8>::read(src)? }),
+            0x2 => Ok(Self::KeepAlive),
+            0x3 => Ok(Self::PushResponse {
                 response: PushResponse::read(src)?,
             }),
-            0x2 => Ok(Self::PushRequest),
-            0x3 => Ok(Self::DeliverFrame {
+            0x4 => Ok(Self::PushRequest),
+            0x5 => Ok(Self::DeliverFrame {
                 file_name: String::read(src)?,
                 content: Vec::<u8>::read(src)?,
             }),
@@ -63,18 +66,18 @@ impl RWBytes for PacketIn {
     fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
         dst.put_u8(self.ordinal() as u8);
         match self {
-            PacketIn::Login { token, version } => {
+            Self::Login { token, version } => {
                 token.write(dst)?;
                 version.write(dst)
             },
-            PacketIn::PushResponse { response } => response.write(dst),
-            PacketIn::PushRequest => Ok(()),
-            PacketIn::DeliverFrame { file_name, content } => {
+            Self::PushResponse { response } => response.write(dst),
+            Self::PushRequest => Ok(()),
+            Self::DeliverFrame { file_name, content } => {
                 file_name.write(dst)?;
                 content.write(dst)
             }
-            PacketIn::ChallengeResponse { val } => val.write(dst),
-            PacketIn::KeepAlive => Ok(()),
+            Self::ChallengeResponse { val } => val.write(dst),
+            Self::KeepAlive => Ok(()),
         }
     }
 }
@@ -125,12 +128,13 @@ impl RWBytes for PacketOut {
     fn read(src: &mut bytes::Bytes) -> anyhow::Result<Self::Ty> {
         let ord = src.get_u8();
         match ord {
-            0x0 => Ok(Self::PushResponse {
-                accepted: bool::read(src)?,
+            0x0 => Ok(Self::ChallengeRequest {
+                challenge: Vec::<u8>::read(src)?,
             }),
             0x1 => Ok(Self::LoginSuccess),
-            0x2 => Ok(Self::PushResponse { accepted: bool::read(src)? }),
-            0x3 => Ok(Self::RequestFrame),
+            0x2 => Ok(Self::KeepAlive),
+            0x3 => Ok(Self::PushResponse { accepted: bool::read(src)? }),
+            0x4 => Ok(Self::RequestFrame),
             _ => unreachable!("Unknown packet ordinal {ord}"),
         }
     }
