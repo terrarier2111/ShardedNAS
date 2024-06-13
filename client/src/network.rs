@@ -28,7 +28,6 @@ impl NetworkClient {
         packet.write(&mut buf)?;
         let mut final_buf = BytesMut::new();
         (buf.len() as u64).write(&mut final_buf)?;
-        (packet.ordinal() as u8).write(&mut final_buf)?;
         final_buf.extend(buf);
         self.write_conn.lock().unwrap().write_all(&final_buf)?;
         Ok(())

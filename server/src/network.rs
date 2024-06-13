@@ -11,7 +11,7 @@ use std::{
 
 use bytes::BytesMut;
 use rand::RngCore;
-use rsa::{pkcs1::DecodeRsaPublicKey, sha2::Sha256, Pss, RsaPublicKey};
+use rsa::{pkcs1::DecodeRsaPublicKey, sha2::{Digest, Sha256}, Pss, RsaPublicKey};
 use swap_it::SwapIt;
 use tokio::{
     io::AsyncWriteExt,
@@ -149,6 +149,7 @@ struct PendingConn {
 
 impl PendingConn {
     async fn await_login(mut self) {
+        self.conn.set_nodelay(true).unwrap();
         tokio::spawn(async move {
             let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet(&mut self.conn)).await {
                 Ok(packet) => packet.unwrap(),
@@ -179,7 +180,10 @@ impl PendingConn {
                 
                 if let PacketIn::ChallengeResponse { val } = read_full_packet(&mut self.conn).await.unwrap() {
                     let pub_key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
-                    if pub_key.verify(Pss::new::<Sha256>(), &challenge, &val).is_err() {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&challenge);
+                    let hash = hasher.finalize();
+                    if pub_key.verify(Pss::new::<Sha256>(), &hash, &val).is_err() {
                         self.server
                     .println("Failed challenge during login");
                         // FIXME: block ip as it tried to immitate the token holder

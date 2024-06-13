@@ -7,8 +7,6 @@ use crate::{protocol::RWBytes, Token};
 pub async fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
     conn.read_exact(&mut len_buf).await.unwrap();
-    let mut id_buf = [0; 1];
-    conn.read_exact(&mut id_buf).await.unwrap();
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf).await.unwrap();
@@ -21,9 +19,9 @@ pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut) -> anyho
     packet.write(&mut buf)?;
     let mut final_buf = BytesMut::new();
     (buf.len() as u64).write(&mut final_buf)?;
-    (packet.ordinal() as u8).write(&mut final_buf)?;
     final_buf.extend_from_slice(&buf);
     conn.write_all(&final_buf).await.unwrap();
+    conn.flush().await.unwrap();
     Ok(())
 }
 
@@ -141,6 +139,7 @@ impl RWBytes for PacketOut {
 
     fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
         let ord = self.ordinal() as u8;
+        println!("writing: {ord}");
         dst.put_u8(ord);
         match self {
             PacketOut::LoginSuccess => Ok(()),

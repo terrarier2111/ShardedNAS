@@ -8,8 +8,6 @@ use crate::{protocol::RWBytes, Token};
 pub fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
     conn.read_exact(&mut len_buf).unwrap();
-    let mut id_buf = [0; 1];
-    conn.read_exact(&mut id_buf).unwrap();
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf).unwrap();

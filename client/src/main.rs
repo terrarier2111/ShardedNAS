@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::Arc, thread, time::Duration};
+use std::{fs, path::Path, sync::{atomic::{AtomicBool, Ordering}, Arc}, thread, time::Duration};
 
 use clitty::{core::{CmdParamEnumConstraints, CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal, UsageBuilder}, ui::{CLIBuilder, CmdLineInterface, PrintFallback}};
 use config::{Config, RegisterCfg};
@@ -43,7 +43,6 @@ fn main() {
                     let hashed = hasher.finalize();
                     let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key).expect("Invalid private key").sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha256>(), &hashed).unwrap();
                     conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed }).unwrap();
-                    println!("sent response");
                     if let Ok(PacketIn::LoginSuccess) = conn.read_packet() {
                         cli.println("Successfully logged in");
                     } else {
@@ -67,6 +66,19 @@ fn main() {
         conn: Arc::new(conn),
         cli,
         credentials: creds,
+        running: AtomicBool::new(true),
+    });
+    let t_cli = client.cli.clone();
+    let t_client = client.clone();
+    thread::spawn(move || {
+        loop {
+            match t_cli.await_input(&t_client) {
+                Ok(_) => {},
+                Err(_) => {
+                    t_cli.println("Failed to await input");
+                },
+            }
+        }
     });
     let client2 = client.clone();
     thread::spawn(move || {
@@ -76,6 +88,9 @@ fn main() {
             
         }
     });
+    while client.running.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(1000));
+    }
 }
 
 pub struct Client {
@@ -83,6 +98,7 @@ pub struct Client {
     credentials: RegisterCfg,
     pub conn: Arc<NetworkClient>,
     cli: Arc<CmdLineInterface<Arc<Client>>>,
+    running: AtomicBool,
 }
 
 impl Client {
