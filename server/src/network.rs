@@ -20,7 +20,7 @@ use tokio::{
 };
 
 use crate::{
-    binary_to_str, config::MetaCfg, packet::{read_full_packet, write_full_packet, PacketIn, PacketOut, PushResponse}, protocol::{RWBytes, PROTOCOL_VERSION}, utils::current_time_millis, Server, Token
+    binary_to_str, config::MetaCfg, packet::{read_full_packet, write_full_packet, PacketIn, PacketOut}, protocol::{RWBytes, PROTOCOL_VERSION}, utils::current_time_millis, Server, Token
 };
 
 pub struct NetworkServer {
@@ -86,18 +86,10 @@ impl Connection {
                     .unwrap();
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
-                    PacketIn::PushResponse { response } => match response {
-                        PushResponse::CompletedTransmission => {
-                            let mut cfg = self.cfg.load().clone();
-                            cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] =
-                                current_time_millis();
-                            fs::write(format!("./nas/instances/{}/meta.json", &id_str), serde_json::to_string(&cfg).unwrap().as_bytes()).unwrap();
-                        }
-                        // FIXME: handle other cases
-                        _ => {}
+                    PacketIn::BackupRequest => {
+
                     },
-                    PacketIn::PushRequest => todo!(),
-                    PacketIn::DeliverFrame { file_name, content } => {
+                    PacketIn::DeliverFrame { file_name, content, last_frame } => {
                         if file_name.contains("..") || file_name.starts_with("/") {
                             // FIXME: kill connection, as it attempted to perform bad file actions
                             return;
@@ -123,20 +115,21 @@ impl Connection {
                         // clean up tmp file
                         fs::remove_file(&tmp_path).unwrap();
 
-                        write_full_packet(conn.lock().await.deref_mut(), PacketOut::RequestFrame).await.unwrap();
+                        write_full_packet(conn.lock().await.deref_mut(), PacketOut::FrameRequest).await.unwrap();
                     }
                     PacketIn::ChallengeResponse { .. } => unreachable!("unexpected login challenge packet"),
                     PacketIn::KeepAlive => {
                         self.last_keep_alive.store(current_time_millis() as u64, Ordering::Release);
+                        write_full_packet(conn.lock().await.deref_mut(), PacketOut::KeepAlive).await.unwrap();
                     },
+                    PacketIn::FinishedBackup => {
+                        let mut cfg = self.cfg.load().clone();
+                        cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] =
+                            current_time_millis();
+                        fs::write(format!("./nas/instances/{}/meta.json", &id_str), serde_json::to_string(&cfg).unwrap().as_bytes()).unwrap();
+                    }
                 }
             }
-        });
-    }
-
-    async fn start_keep_alive(self: Arc<Self>, server: Arc<Server>) {
-        tokio::spawn(async move {
-            
         });
     }
 }
@@ -195,7 +188,7 @@ impl PendingConn {
                 return;
                 }
 
-                write_full_packet(&mut self.conn, PacketOut::LoginSuccess).await.unwrap();
+                write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }).await.unwrap();
 
                 self.server.network.clients.lock().await.push(Connection {
                     id: token,

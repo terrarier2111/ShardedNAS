@@ -31,10 +31,9 @@ pub enum PacketIn {
     Login { token: Token, version: u16 } = 0x0,
     ChallengeResponse { val: Vec<u8>, } = 0x1,
     KeepAlive = 0x2,
-    PushResponse { response: PushResponse } = 0x3,
-    PushRequest = 0x4,
-    DeliverFrame { file_name: String, content: Vec<u8> } = 0x5,
-
+    BackupRequest = 0x3,
+    DeliverFrame { file_name: String, content: Vec<u8>, last_frame: bool, } = 0x4,
+    FinishedBackup = 0x5,
 }
 
 impl RWBytes for PacketIn {
@@ -49,14 +48,13 @@ impl RWBytes for PacketIn {
             }),
             0x1 => Ok(Self::ChallengeResponse { val: Vec::<u8>::read(src)? }),
             0x2 => Ok(Self::KeepAlive),
-            0x3 => Ok(Self::PushResponse {
-                response: PushResponse::read(src)?,
-            }),
-            0x4 => Ok(Self::PushRequest),
-            0x5 => Ok(Self::DeliverFrame {
+            0x3 => Ok(Self::BackupRequest),
+            0x4 => Ok(Self::DeliverFrame {
                 file_name: String::read(src)?,
                 content: Vec::<u8>::read(src)?,
+                last_frame: bool::read(src)?,
             }),
+            0x5 => Ok(Self::FinishedBackup),
             _ => unreachable!("Unknown packet ordinal {ord}"),
         }
     }
@@ -68,11 +66,12 @@ impl RWBytes for PacketIn {
                 token.write(dst)?;
                 version.write(dst)
             },
-            Self::PushResponse { response } => response.write(dst),
-            Self::PushRequest => Ok(()),
-            Self::DeliverFrame { file_name, content } => {
+            Self::BackupRequest => Ok(()),
+            Self::FinishedBackup => Ok(()),
+            Self::DeliverFrame { file_name, content, last_frame } => {
                 file_name.write(dst)?;
-                content.write(dst)
+                content.write(dst)?;
+                last_frame.write(dst)
             }
             Self::ChallengeResponse { val } => val.write(dst),
             Self::KeepAlive => Ok(()),
@@ -82,42 +81,14 @@ impl RWBytes for PacketIn {
 
 #[derive(Ordinal)]
 #[repr(u8)]
-pub enum PushResponse {
-    Success = 0x0,
-    Wait = 0x1,
-    CompletedTransmission = 0x2,
-}
-
-impl RWBytes for PushResponse {
-    type Ty = Self;
-
-    fn read(src: &mut Bytes) -> anyhow::Result<Self::Ty> {
-        let ord = src.get_u8();
-        match ord {
-            0x0 => Ok(Self::Success),
-            0x1 => Ok(Self::Wait),
-            0x2 => Ok(Self::CompletedTransmission),
-            _ => unreachable!(),
-        }
-    }
-
-    fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
-        let ord = self.ordinal() as u8;
-        dst.put_u8(ord);
-        Ok(())
-    }
-}
-
-#[derive(Ordinal)]
-#[repr(u8)]
 pub enum PacketOut {
     ChallengeRequest { challenge: Vec<u8> } = 0x0,
-    LoginSuccess = 0x1,
+    LoginSuccess { max_frame_size: u64, } = 0x1,
     KeepAlive = 0x2,
     /// responds to the clients request to start sending updates
-    PushResponse { accepted: bool } = 0x3,
-    /// request the next frame from the client
-    RequestFrame = 0x4,
+    ConfirmBackup = 0x3,
+    /// requests the next frame from the client
+    FrameRequest = 0x4,
 }
 
 impl RWBytes for PacketOut {
@@ -129,23 +100,22 @@ impl RWBytes for PacketOut {
             0x0 => Ok(Self::ChallengeRequest {
                 challenge: Vec::<u8>::read(src)?,
             }),
-            0x1 => Ok(Self::LoginSuccess),
+            0x1 => Ok(Self::LoginSuccess { max_frame_size: u64::read(src)?, }),
             0x2 => Ok(Self::KeepAlive),
-            0x3 => Ok(Self::PushResponse { accepted: bool::read(src)? }),
-            0x4 => Ok(Self::RequestFrame),
+            0x3 => Ok(Self::ConfirmBackup),
+            0x4 => Ok(Self::FrameRequest),
             _ => unreachable!("Unknown packet ordinal {ord}"),
         }
     }
 
     fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
         let ord = self.ordinal() as u8;
-        println!("writing: {ord}");
         dst.put_u8(ord);
         match self {
-            PacketOut::LoginSuccess => Ok(()),
-            PacketOut::PushResponse { accepted } => accepted.write(dst),
+            PacketOut::LoginSuccess { max_frame_size } => max_frame_size.write(dst),
+            PacketOut::ConfirmBackup => Ok(()),
             PacketOut::ChallengeRequest { challenge } => challenge.write(dst),
-            PacketOut::RequestFrame => Ok(()),
+            PacketOut::FrameRequest => Ok(()),
             PacketOut::KeepAlive => Ok(()),            
         }
     }

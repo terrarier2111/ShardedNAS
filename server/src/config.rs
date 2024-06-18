@@ -11,6 +11,7 @@ pub struct Config {
     pub periods: Vec<u128>, // these are stored in milli seconds
     pub connect_timeout_ms: u64,
     pub read_timeout_ms: u64,
+    pub max_frame_size_b: u64,
 }
 
 impl Config {
@@ -20,12 +21,13 @@ impl Config {
         if !Path::new(Self::PATH).exists() {
             fs::write(
                 Self::PATH,
-                serde_json::to_string(&Config {
+                serde_json::to_string_pretty(&Config {
                     port: 28462,
                     tokens: HashSet::new(),
                     periods: vec![Duration::from_days(1).as_millis(), Duration::from_days(30).as_millis(), Duration::from_days(365).as_millis()],
                     connect_timeout_ms: 15000,
                     read_timeout_ms: 30000,
+                    max_frame_size_b: 1024 * 1024 * 64,
                 })
                 .unwrap(),
             )
