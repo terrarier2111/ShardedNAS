@@ -1,12 +1,8 @@
 use std::{
-    fs,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    ops::DerefMut,
-    path::Path,
-    sync::{
+    fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
-    }, time::Duration,
+    }, time::Duration
 };
 
 use bytes::BytesMut;
@@ -122,11 +118,13 @@ impl Connection {
                                 .map(|name| name.to_str().unwrap())
                                 .unwrap_or(file_name.as_str())
                         );
-                        fs::write(&tmp_path, content).unwrap();
-                        // replace original file
-                        fs::copy(&tmp_path, &format!("./nas/instances/{}/storage/{}", &hash, file_name)).unwrap();
-                        // clean up tmp file
-                        fs::remove_file(&tmp_path).unwrap();
+                        OpenOptions::new().write(true).append(true).create(true).open(&tmp_path).unwrap().write_all(&content).unwrap();
+                        if last_frame {
+                            // replace original file
+                            fs::copy(&tmp_path, &format!("./nas/instances/{}/storage/{}", &hash, file_name)).unwrap();
+                            // clean up tmp file
+                            fs::remove_file(&tmp_path).unwrap();
+                        }
 
                         write_full_packet(conn.lock().await.deref_mut(), PacketOut::FrameRequest).await.unwrap();
                     }
