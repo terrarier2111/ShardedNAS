@@ -57,9 +57,7 @@ async fn main() {
                                         })
                                         .optional(CommandParam {
                                             name: "delete",
-                                            ty: CommandParamTy::String(
-                                                CmdParamStrConstraints::None,
-                                            ),
+                                            ty: CommandParamTy::Enum(CmdParamEnumConstraints::Exact(vec![("true", EnumVal::None), ("false", EnumVal::None)])),
                                         }),
                                 ),
                             ),
