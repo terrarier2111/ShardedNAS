@@ -20,12 +20,12 @@ use tokio::{
 };
 
 use crate::{
-    binary_to_str, config::MetaCfg, packet::{read_full_packet, write_full_packet, PacketIn, PacketOut}, protocol::{RWBytes, PROTOCOL_VERSION}, utils::current_time_millis, Server, Token
+    binary_to_hash, binary_to_str, config::MetaCfg, packet::{read_full_packet, write_full_packet, PacketIn, PacketOut}, protocol::{RWBytes, PROTOCOL_VERSION}, utils::current_time_millis, Server, Token
 };
 
 pub struct NetworkServer {
     server: Mutex<TcpListener>,
-    pub clients: Mutex<Vec<Connection>>,
+    pub clients: Mutex<Vec<Arc<Connection>>>,
 }
 
 impl NetworkServer {
@@ -78,6 +78,7 @@ impl Connection {
         let conn = self.conn.clone();
         let id = self.id.clone();
         let id_str = binary_to_str(&id);
+        let hash = binary_to_hash(&id);
         tokio::spawn(async move {
             // FIXME: terminate on server shutdown
             loop {
@@ -87,23 +88,35 @@ impl Connection {
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
                     PacketIn::BackupRequest => {
-
+                        // FIXME: handle request
+                        println!("got bckup request");
                     },
                     PacketIn::DeliverFrame { file_name, content, last_frame } => {
-                        if file_name.contains("..") || file_name.starts_with("/") {
+                        if file_name.contains("..") {
                             // FIXME: kill connection, as it attempted to perform bad file actions
                             return;
                         }
+                        let file_name = {
+                            let start_cnt = 'outer: {
+                                for i in 0..file_name.len() {
+                                    if file_name.chars().skip(i).next() != Some('/') {
+                                        break 'outer i;
+                                    }
+                                }
+                                file_name.len()
+                            };
+                            (&file_name[start_cnt..]).to_string()
+                        };
                         if let Some(parent) = Path::new(&file_name).parent() {
                             fs::create_dir_all(format!(
-                                "./nas/instances/{}/storage/{:?}",
-                                &id_str, parent
+                                "./nas/instances/{}/storage/{}",
+                                &hash, parent.to_str().unwrap()
                             ))
                             .unwrap();
                         }
                         let tmp_path = format!(
                             "./nas/tmp/{}_{}",
-                            &id_str,
+                            &hash,
                             Path::new(&file_name)
                                 .file_name()
                                 .map(|name| name.to_str().unwrap())
@@ -111,7 +124,7 @@ impl Connection {
                         );
                         fs::write(&tmp_path, content).unwrap();
                         // replace original file
-                        fs::copy(&tmp_path, &file_name).unwrap();
+                        fs::copy(&tmp_path, &format!("./nas/instances/{}/storage/{}", &hash, file_name)).unwrap();
                         // clean up tmp file
                         fs::remove_file(&tmp_path).unwrap();
 
@@ -160,7 +173,7 @@ impl PendingConn {
                     // FIXME: block ip for some time (a couple seconds) to prevent guessing a correct token through brute force
                     return;
                 }
-                let token_str = binary_to_str(&token);
+                let token_str = binary_to_hash(&token);
                 let cfg: MetaCfg = serde_json::from_str(
                     &fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str))
                         .unwrap(),
@@ -190,7 +203,8 @@ impl PendingConn {
 
                 write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }).await.unwrap();
 
-                self.server.network.clients.lock().await.push(Connection {
+                
+                let conn = Arc::new(Connection {
                     id: token,
                     conn: Arc::new(Mutex::new(self.conn)),
                     addr: self.addr,
@@ -198,6 +212,8 @@ impl PendingConn {
                     curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                 });
+                conn.clone().handle_packets().await;
+                self.server.network.clients.lock().await.push(conn);
                 self.server
                     .println(&format!("Client {} connected", token_str));
             } else {

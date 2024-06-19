@@ -1,7 +1,7 @@
 #![feature(duration_constructors)]
 
 use std::{
-    fs, path::Path, sync::{
+    fs, io::Read, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     }, thread, time::Duration
@@ -154,7 +154,7 @@ impl CommandImpl for CmdTokens {
         match input[0] {
             "register" => {
                 let (token, priv_key) = ctx.gen_token();
-                let token_str = binary_to_str(&token);
+                let token_str = binary_to_hash(&token);
                 if !Path::new(&format!("./nas/instances/{}/storage", &token_str)).exists() {
                     ctx.println("Creating file structure...");
                     fs::create_dir_all(format!("./nas/instances/{}/storage", &token_str)).unwrap();
@@ -209,6 +209,14 @@ impl CommandImpl for CmdTokens {
             _ => unreachable!(),
         }
     }
+}
+
+pub fn binary_to_hash(token: &Token) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(token);
+    let mut bin = [0; 8];
+    hasher.finalize_xof().fill(&mut bin);
+    u64::from_ne_bytes(bin).to_string()
 }
 
 pub fn binary_to_str(token: &Token) -> String {

@@ -100,7 +100,9 @@ fn main() {
                 PacketIn::ConfirmBackup => {
                     
                 },
-                PacketIn::FrameRequest => {},
+                PacketIn::FrameRequest => {
+                    client.conn.acknowledged.store(true, Ordering::Release);
+                },
             }
         }
     });
@@ -131,14 +133,23 @@ fn main() {
                 false
             };
             if !delta {
+                client.println("No changes found, skipping backup...");
+                let new_cfg = Meta {
+                    fingerprints,
+                    last_update: backup_start,
+                };
+                client.update_meta(new_cfg);
                 continue;
             }
+            client.println("Detected changes, starting backup...");
             let mut fingerprints = HashMap::new();
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
                     // FIXME: tell backup server that this just doesn't exist
+                    client.println(&format!("Can't read \"{}\"", path));
                     continue;
                 }
+
                 let hash = calculate_fingerprint(path);
                 fingerprints.insert(path.to_string(), hash);
                 client.send_by_path(path);
@@ -149,6 +160,7 @@ fn main() {
             };
 
             client.update_meta(new_cfg);
+            client.println("Finished backup");
         }
     });
     while client.running.load(Ordering::Acquire) {
@@ -158,12 +170,15 @@ fn main() {
 
 fn calculate_fingerprint(path: &str) -> u64 {
     if Path::new(path).is_file() {
-        const CHUNK_SIZE: usize = 1024 * 4;
+        const CHUNK_SIZE: usize = 1024 * 4 * 512;
 
         let mut hasher = blake3::Hasher::new();
         let mut file = File::open(path).unwrap();
-        let mut buf = [0; CHUNK_SIZE];
+        let mut buf = vec![0; CHUNK_SIZE];
         while let Ok(bytes) = file.read(&mut buf) {
+            if bytes == 0 {
+                break;
+            }
             hasher.update(&buf[0..bytes]);
         }
         let mut result = [0; 8];
@@ -206,6 +221,7 @@ impl Client {
 
     fn send_by_path<P: AsRef<Path>>(&self, path: P) {
         let path = path.as_ref();
+        println!("sending {:?}", path);
         if path.is_dir() {
             for file in fs::read_dir(path).unwrap() {
                 if let Ok(file) = file {
@@ -226,12 +242,14 @@ impl Client {
                     let mut content = vec![0; LARGE_THRESHOLD as usize];
                     file.read_exact(&mut content).unwrap();
                     let last_frame = i == frames - 1;
+                    println!("delivered large frame");
                     self.conn.write_packet(packet::PacketOut::DeliverFrame { file_name: path.to_str().unwrap().to_string(), content, last_frame }).unwrap();
                     self.await_acknowledgement();
                     // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
                 }
             } else {
                 let content = fs::read(path).unwrap();
+                println!("delivered small frame");
                 self.conn.write_packet(packet::PacketOut::DeliverFrame { file_name: path.to_str().unwrap().to_string(), content, last_frame: true }).unwrap();
                 self.await_acknowledgement();
                 // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
