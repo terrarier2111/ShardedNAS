@@ -18,6 +18,7 @@ use network::NetworkServer;
 use rand::{thread_rng, Rng};
 use rsa::{pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey}, RsaPrivateKey, RsaPublicKey};
 use swap_it::SwapIt;
+use utils::clear_dir;
 
 mod config;
 mod network;
@@ -30,6 +31,7 @@ pub type Token = Vec<u8>;
 #[tokio::main]
 async fn main() {
     fs::create_dir_all("./nas/tmp").unwrap();
+    clear_dir("./nas/tmp/").unwrap();
     let cfg = Config::load();
     let window = CLIBuilder::new()
         .prompt("SharedNAS: ".to_string())
