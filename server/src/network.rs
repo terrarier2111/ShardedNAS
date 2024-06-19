@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     }, time::Duration
 };
@@ -67,17 +67,18 @@ pub struct Connection {
     pub addr: SocketAddr,
     curr_trans_idx: AtomicUsize,
     last_keep_alive: AtomicU64,
+    shutdown: AtomicBool,
 }
 
 impl Connection {
-    async fn handle_packets(self: Arc<Self>) {
+    async fn handle_packets(self: Arc<Self>, server: Arc<Server>) {
         let conn = self.conn.clone();
         let id = self.id.clone();
         let id_str = binary_to_str(&id);
         let hash = binary_to_hash(&id);
         tokio::spawn(async move {
             // FIXME: terminate on server shutdown
-            loop {
+            while server.is_running() && self.is_running() {
                 let packet = read_full_packet(conn.lock().await.deref_mut())
                     .await
                     .unwrap();
@@ -141,7 +142,20 @@ impl Connection {
                     }
                 }
             }
+            let _ = self.conn.lock().await.shutdown().await;
         });
+    }
+
+    pub async fn shutdown(&self) -> anyhow::Result<bool> {
+        if self.shutdown.compare_exchange(false, true, Ordering::Release, Ordering::Acquire).is_err() {
+            return Ok(false);
+        }
+        self.conn.lock().await.shutdown().await?;
+        Ok(true)
+    }
+
+    pub fn is_running(&self) -> bool {
+        !self.shutdown.load(Ordering::Acquire)
     }
 }
 
@@ -209,8 +223,9 @@ impl PendingConn {
                     cfg: SwapIt::new(cfg),
                     curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
+                    shutdown: AtomicBool::new(false),
                 });
-                conn.clone().handle_packets().await;
+                conn.clone().handle_packets(self.server.clone()).await;
                 self.server.network.clients.lock().await.push(conn);
                 self.server
                     .println(&format!("Client {} connected", token_str));

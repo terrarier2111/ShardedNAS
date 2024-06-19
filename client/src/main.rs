@@ -97,9 +97,6 @@ fn main() {
                 PacketIn::KeepAlive => {
                     client.conn.last_keep_alive.store(current_time_millis() as u64, Ordering::Release);
                 },
-                PacketIn::ConfirmBackup => {
-                    
-                },
                 PacketIn::FrameRequest => {
                     client.conn.acknowledged.store(true, Ordering::Release);
                 },
@@ -116,32 +113,8 @@ fn main() {
             }
             client.println("Trying to initiate update...");
             let backup_start = current_time_millis();
-            let mut fingerprints = HashMap::new();
-            for path in client.cfg.load().backup_locations.iter() {
-                if !Path::new(path).exists() {
-                    continue;
-                }
-                let hash = calculate_fingerprint(path);
-                fingerprints.insert(path.to_string(), hash);
-            }
-            let delta = 'outer: {
-                for hash in fingerprints.iter() {
-                    if client.meta.load().fingerprints.get(hash.0).map(|old| *old != *hash.1).unwrap_or(true) {
-                        break 'outer true;
-                    }
-                }
-                false
-            };
-            if !delta {
-                client.println("No changes found, skipping backup...");
-                let new_cfg = Meta {
-                    fingerprints,
-                    last_update: backup_start,
-                };
-                client.update_meta(new_cfg);
-                continue;
-            }
-            client.println("Detected changes, starting backup...");
+            let meta = client.meta.load();
+            let mut got_clearance = false;
             let mut fingerprints = HashMap::new();
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
@@ -149,11 +122,18 @@ fn main() {
                     client.println(&format!("Can't read \"{}\"", path));
                     continue;
                 }
-
                 let hash = calculate_fingerprint(path);
                 fingerprints.insert(path.to_string(), hash);
-                client.send_by_path(path);
+                if meta.fingerprints.get(path).cloned() != Some(hash) {
+                    if !got_clearance {
+                        client.conn.write_packet(packet::PacketOut::BackupRequest).unwrap();
+                        client.await_acknowledgement();
+                        got_clearance = true;
+                    }
+                    client.send_by_path(path);
+                }
             }
+            
             let new_cfg = Meta {
                 fingerprints,
                 last_update: backup_start,

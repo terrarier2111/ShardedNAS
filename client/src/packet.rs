@@ -75,10 +75,8 @@ pub enum PacketIn {
     ChallengeRequest { challenge: Vec<u8> } = 0x0,
     LoginSuccess { max_frame_size: u64, } = 0x1,
     KeepAlive = 0x2,
-    /// responds to the clients request to start sending updates
-    ConfirmBackup = 0x3,
     /// permit the next frame from the client
-    FrameRequest = 0x4,
+    FrameRequest = 0x3,
 }
 
 impl RWBytes for PacketIn {
@@ -92,8 +90,7 @@ impl RWBytes for PacketIn {
             }),
             0x1 => Ok(Self::LoginSuccess { max_frame_size: u64::read(src)? }),
             0x2 => Ok(Self::KeepAlive),
-            0x3 => Ok(Self::ConfirmBackup),
-            0x4 => Ok(Self::FrameRequest),
+            0x3 => Ok(Self::FrameRequest),
             _ => unreachable!("Unknown packet ordinal {ord}"),
         }
     }
@@ -103,7 +100,6 @@ impl RWBytes for PacketIn {
         dst.put_u8(ord);
         match self {
             Self::LoginSuccess { max_frame_size } => max_frame_size.write(dst),
-            Self::ConfirmBackup => Ok(()),
             Self::FrameRequest => Ok(()),
             Self::ChallengeRequest { challenge } => challenge.write(dst),
             Self::KeepAlive => Ok(()),
