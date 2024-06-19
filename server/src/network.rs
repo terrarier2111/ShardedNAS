@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
+    cell::UnsafeCell, fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     }, time::Duration
@@ -64,6 +64,7 @@ pub struct Connection {
     cfg: SwapIt<MetaCfg>,
     conn: Arc<Mutex<TcpStream>>,
     pub addr: SocketAddr,
+    key: RsaPublicKey,
     curr_trans_idx: AtomicUsize,
     last_keep_alive: AtomicU64,
     shutdown: AtomicBool,
@@ -78,7 +79,7 @@ impl Connection {
         tokio::spawn(async move {
             // FIXME: terminate on server shutdown
             while server.is_running() && self.is_running() {
-                let packet = match read_full_packet(conn.lock().await.deref_mut()).await {
+                let packet = match read_full_packet(conn.lock().await.deref_mut(), &server.key.key).await {
                     Ok(packet) => packet,
                     Err(_) => {
                         let _ = self.shutdown(&server).await;
@@ -165,7 +166,7 @@ impl Connection {
     }
 
     async fn write_packet(&self, packet: PacketOut, server: &Arc<Server>) -> anyhow::Result<()> {
-        match write_full_packet(self.conn.lock().await.deref_mut(), packet).await {
+        match write_full_packet(self.conn.lock().await.deref_mut(), packet, &self.key).await {
             Ok(_) => Ok(()),
             Err(error) => {
                 // the error we deliver is more important than the disconnect error
@@ -186,7 +187,7 @@ impl PendingConn {
     async fn await_login(mut self) {
         self.conn.set_nodelay(true).expect("Failure setting no_delay");
         tokio::spawn(async move {
-            let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet(&mut self.conn)).await {
+            let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet(&mut self.conn, &self.server.key.key)).await {
                 Ok(Ok(packet)) => packet,
                 // a timeout or an error occoured
                 Err(_) | Ok(Err(_)) => return,
@@ -216,14 +217,15 @@ impl PendingConn {
                         return;
                     },
                 };
+                let key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
                 let mut challenge = [0; 256];
                 rand::thread_rng().fill_bytes(&mut challenge);
 
-                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }).await {
+                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }, &key).await {
                     return;
                 }
                 
-                let packet = match read_full_packet(&mut self.conn).await {
+                let packet = match read_full_packet(&mut self.conn, &self.server.key.key).await {
                     Ok(packet) => packet,
                     Err(_) => {
                         // couldn't read data from connection
@@ -248,7 +250,7 @@ impl PendingConn {
                     return;
                 }
 
-                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }).await {
+                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }, &key).await {
                     self.server.println(&format!("The client {} immediately disconnected", binary_to_hash(&token)));
                     return;
                 }
@@ -261,6 +263,7 @@ impl PendingConn {
                     curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                     shutdown: AtomicBool::new(false),
+                    key,
                 });
                 conn.clone().handle_packets(self.server.clone()).await;
                 self.server.network.clients.lock().await.push(conn);

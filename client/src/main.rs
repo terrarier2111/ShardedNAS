@@ -37,7 +37,7 @@ fn main() {
     let cfg = Arc::new(SwapIt::new(Config::load()));
     // FIXME: we only need a network client if the last backup is too old
     let conn = 'outer: loop {
-        match NetworkClient::new(cfg.clone()) {
+        match NetworkClient::new(cfg.clone(), creds.server_pub_key.clone(), creds.priv_key.clone()) {
             Ok(conn) => {
                 conn.write_packet(packet::PacketOut::Login { token: creds.token.clone(), version: PROTOCOL_VERSION, }).unwrap();
                 let packet = conn.read_packet();

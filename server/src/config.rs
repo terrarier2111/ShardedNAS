@@ -1,5 +1,6 @@
 use std::{collections::HashSet, fs, path::Path, time::Duration};
 
+use rsa::{pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey}, RsaPrivateKey};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::Token;
@@ -37,6 +38,27 @@ impl Config {
     }
 }
 
+pub struct EncryptionKey {
+    pub key: RsaPrivateKey,
+}
+
+impl EncryptionKey {
+    const PATH: &str = "./nas/private.key";
+
+    pub fn load() -> Self {
+        if !Path::new(Self::PATH).exists() {
+            let mut rng = rand::thread_rng();
+            let bits = 4096;
+            let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+            fs::write(Self::PATH, &priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec()).unwrap();
+        }
+        Self {
+            key: RsaPrivateKey::from_pkcs1_der(&fs::read(Self::PATH).unwrap()).unwrap(),
+        }
+    }
+
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MetaCfg {
     pub last_updates: Vec<u128>,
@@ -46,5 +68,6 @@ pub struct MetaCfg {
 #[derive(Serialize, Deserialize)]
 pub struct RegisterCfg {
     pub priv_key: Vec<u8>,
+    pub server_pub_key: Vec<u8>,
     pub token: Vec<u8>,
 }

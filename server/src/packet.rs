@@ -1,25 +1,30 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use ordinalizer::Ordinal;
+use rand::{rngs::OsRng, thread_rng};
+use rsa::{sha2::Sha256, Oaep, RsaPrivateKey, RsaPublicKey};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 use crate::{protocol::RWBytes, Token};
 
-pub async fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> {
+pub async fn read_full_packet(conn: &mut TcpStream, key: &RsaPrivateKey) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
     conn.read_exact(&mut len_buf).await?;
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf).await?;
-    let mut packet_buf = Bytes::from(packet_buf);
+    let decrypted = key.decrypt(Oaep::new::<Sha256>(), &packet_buf)?;
+    let mut packet_buf = Bytes::from(decrypted);
     Ok(PacketIn::read(&mut packet_buf)?)
 }
 
-pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut) -> anyhow::Result<()> {
+pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut, key: &RsaPublicKey) -> anyhow::Result<()> {
     let mut buf = BytesMut::new();
     packet.write(&mut buf)?;
+    let mut rng = OsRng::default();
+    let encrypted = key.encrypt(&mut rng, Oaep::new::<Sha256>(), &buf)?;
     let mut final_buf = BytesMut::new();
     (buf.len() as u64).write(&mut final_buf)?;
-    final_buf.extend_from_slice(&buf);
+    final_buf.extend(encrypted);
     conn.write_all(&final_buf).await?;
     conn.flush().await?;
     Ok(())

@@ -53,5 +53,6 @@ impl Meta {
 #[derive(Serialize, Deserialize)]
 pub struct RegisterCfg {
     pub priv_key: Vec<u8>,
+    pub server_pub_key: Vec<u8>,
     pub token: Vec<u8>,
 }

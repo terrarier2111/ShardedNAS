@@ -2,16 +2,18 @@ use std::{io::Read, net::TcpStream};
 
 use bytes::{Buf, BufMut, Bytes};
 use ordinalizer::Ordinal;
+use rsa::{sha2::Sha256, Oaep, RsaPrivateKey};
 
 use crate::{protocol::RWBytes, Token};
 
-pub fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> {
+pub fn read_full_packet(conn: &mut TcpStream, key: &RsaPrivateKey) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
-    conn.read_exact(&mut len_buf).unwrap();
+    conn.read_exact(&mut len_buf)?;
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
-    conn.read_exact(&mut packet_buf).unwrap();
-    let mut packet_buf = Bytes::from(packet_buf);
+    conn.read_exact(&mut packet_buf)?;
+    let decrypted = key.decrypt(Oaep::new::<Sha256>(), &packet_buf)?;
+    let mut packet_buf = Bytes::from(decrypted);
     Ok(PacketIn::read(&mut packet_buf)?)
 }
 

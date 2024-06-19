@@ -13,7 +13,7 @@ use clitty::{
     },
     ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
-use config::{Config, MetaCfg, RegisterCfg};
+use config::{Config, EncryptionKey, MetaCfg, RegisterCfg};
 use network::NetworkServer;
 use rand::{thread_rng, Rng};
 use rsa::{pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey}, RsaPrivateKey, RsaPublicKey};
@@ -75,12 +75,7 @@ async fn main() {
         .fallback(Box::new(PrintFallback::new("This command doesn't exist".to_string())))
         .build();
     let cli = Arc::new(CmdLineInterface::new(window));
-    let server = Arc::new(Server {
-        running: AtomicBool::new(true),
-        network: NetworkServer::new(cfg.port).await,
-        cfg: SwapIt::new(cfg),
-        cli: cli.clone(),
-    });
+    let server = Arc::new(Server {running:AtomicBool::new(true),network:NetworkServer::new(cfg.port).await,cfg:SwapIt::new(cfg),cli:cli.clone(), key: EncryptionKey::load() });
     server.network.listen_login(server.clone()).await;
     let srv = server.clone();
     thread::spawn(move || {
@@ -104,6 +99,7 @@ async fn main() {
 pub struct Server {
     running: AtomicBool,
     cfg: SwapIt<Config>,
+    key: EncryptionKey,
     network: NetworkServer,
     cli: Arc<CmdLineInterface<Arc<Server>>>,
 }
@@ -176,7 +172,7 @@ impl CommandImpl for CmdTokens {
 
                 ctx.println(&format!("Created token {} successfully", &token_str));
                 ctx.println("The token information, needed by the client was written into a file at ./nas/tmp/credentials.json");
-                fs::write("./nas/tmp/credentials.json", serde_json::to_string(&RegisterCfg { priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(), token }).unwrap()).unwrap();
+                fs::write("./nas/tmp/credentials.json", serde_json::to_string(&RegisterCfg { priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(), token, server_pub_key: ctx.key.key.to_public_key().to_pkcs1_der().unwrap().into_vec() }).unwrap()).unwrap();
                 Ok(())
             }
             "unregister" => {
