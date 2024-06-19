@@ -5,7 +5,6 @@ use std::{
     }, time::Duration
 };
 
-use bytes::BytesMut;
 use rand::RngCore;
 use rsa::{pkcs1::DecodeRsaPublicKey, sha2::{Digest, Sha256}, Pss, RsaPublicKey};
 use swap_it::SwapIt;
@@ -79,9 +78,13 @@ impl Connection {
         tokio::spawn(async move {
             // FIXME: terminate on server shutdown
             while server.is_running() && self.is_running() {
-                let packet = read_full_packet(conn.lock().await.deref_mut())
-                    .await
-                    .unwrap();
+                let packet = match read_full_packet(conn.lock().await.deref_mut()).await {
+                    Ok(packet) => packet,
+                    Err(_) => {
+                        let _ = self.shutdown(&server).await;
+                        break;
+                    },
+                };
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
                     PacketIn::BackupRequest => {
@@ -127,12 +130,14 @@ impl Connection {
                             fs::remove_file(&tmp_path).unwrap();
                         }
 
-                        write_full_packet(conn.lock().await.deref_mut(), PacketOut::FrameRequest).await.unwrap();
+                        // ignore errors for now
+                        let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
                     }
                     PacketIn::ChallengeResponse { .. } => unreachable!("unexpected login challenge packet"),
                     PacketIn::KeepAlive => {
                         self.last_keep_alive.store(current_time_millis() as u64, Ordering::Release);
-                        write_full_packet(conn.lock().await.deref_mut(), PacketOut::KeepAlive).await.unwrap();
+                        // ignore errors for now
+                        let _ = self.write_packet(PacketOut::KeepAlive, &server).await;
                     },
                     PacketIn::FinishedBackup => {
                         let mut cfg = self.cfg.load().clone();
@@ -146,16 +151,28 @@ impl Connection {
         });
     }
 
-    pub async fn shutdown(&self) -> anyhow::Result<bool> {
+    pub async fn shutdown(&self, server: &Arc<Server>) -> anyhow::Result<bool> {
         if self.shutdown.compare_exchange(false, true, Ordering::Release, Ordering::Acquire).is_err() {
             return Ok(false);
         }
+        server.println(&format!("Client {} disconnected", binary_to_hash(&self.id)));
         self.conn.lock().await.shutdown().await?;
         Ok(true)
     }
 
     pub fn is_running(&self) -> bool {
         !self.shutdown.load(Ordering::Acquire)
+    }
+
+    async fn write_packet(&self, packet: PacketOut, server: &Arc<Server>) -> anyhow::Result<()> {
+        match write_full_packet(self.conn.lock().await.deref_mut(), packet).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                // the error we deliver is more important than the disconnect error
+                let _ = self.shutdown(server).await;
+                Err(error)
+            },
+        }
     }
 }
 
@@ -167,12 +184,12 @@ struct PendingConn {
 
 impl PendingConn {
     async fn await_login(mut self) {
-        self.conn.set_nodelay(true).unwrap();
+        self.conn.set_nodelay(true).expect("Failure setting no_delay");
         tokio::spawn(async move {
             let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet(&mut self.conn)).await {
-                Ok(packet) => packet.unwrap(),
-                // a timeout occoured
-                Err(_) => return,
+                Ok(Ok(packet)) => packet,
+                // a timeout or an error occoured
+                Err(_) | Ok(Err(_)) => return,
             };
             if let PacketIn::Login { token, version } = login {
                 if version != PROTOCOL_VERSION {
@@ -186,17 +203,35 @@ impl PendingConn {
                     return;
                 }
                 let token_str = binary_to_hash(&token);
-                let cfg: MetaCfg = serde_json::from_str(
-                    &fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str))
-                        .unwrap(),
-                )
-                .unwrap();
+                let cfg: MetaCfg = match fs::read_to_string(format!("./nas/instances/{}/meta.json", &token_str)) {
+                    Ok(data) => match serde_json::from_str(&data) {
+                        Ok(cfg) => cfg,
+                        Err(_) => {
+                            self.server.println(&format!("Unreadable metadata for token {}", binary_to_hash(&token)));
+                            return;
+                        },
+                    },
+                    Err(_) => {
+                        // unknown token provided
+                        return;
+                    },
+                };
                 let mut challenge = [0; 256];
                 rand::thread_rng().fill_bytes(&mut challenge);
 
-                write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }).await.unwrap();
+                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }).await {
+                    return;
+                }
                 
-                if let PacketIn::ChallengeResponse { val } = read_full_packet(&mut self.conn).await.unwrap() {
+                let packet = match read_full_packet(&mut self.conn).await {
+                    Ok(packet) => packet,
+                    Err(_) => {
+                        // couldn't read data from connection
+                        return;
+                    },
+                };
+
+                if let PacketIn::ChallengeResponse { val } = packet {
                     let pub_key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
                     let mut hasher = Sha256::new();
                     hasher.update(&challenge);
@@ -210,11 +245,13 @@ impl PendingConn {
                 } else {
                     self.server
                     .println("Unexpected packet received during login");
-                return;
+                    return;
                 }
 
-                write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }).await.unwrap();
-
+                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }).await {
+                    self.server.println(&format!("The client {} immediately disconnected", binary_to_hash(&token)));
+                    return;
+                }
                 
                 let conn = Arc::new(Connection {
                     id: token,

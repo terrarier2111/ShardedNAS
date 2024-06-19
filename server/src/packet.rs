@@ -6,10 +6,10 @@ use crate::{protocol::RWBytes, Token};
 
 pub async fn read_full_packet(conn: &mut TcpStream) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
-    conn.read_exact(&mut len_buf).await.unwrap();
+    conn.read_exact(&mut len_buf).await?;
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
-    conn.read_exact(&mut packet_buf).await.unwrap();
+    conn.read_exact(&mut packet_buf).await?;
     let mut packet_buf = Bytes::from(packet_buf);
     Ok(PacketIn::read(&mut packet_buf)?)
 }
@@ -20,8 +20,8 @@ pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut) -> anyho
     let mut final_buf = BytesMut::new();
     (buf.len() as u64).write(&mut final_buf)?;
     final_buf.extend_from_slice(&buf);
-    conn.write_all(&final_buf).await.unwrap();
-    conn.flush().await.unwrap();
+    conn.write_all(&final_buf).await?;
+    conn.flush().await?;
     Ok(())
 }
 
