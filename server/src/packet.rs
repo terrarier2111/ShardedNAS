@@ -2,7 +2,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use ordinalizer::Ordinal;
 use rand::{rngs::OsRng, thread_rng};
 use ring::aead::{self, Aad, BoundKey, OpeningKey, SealingKey};
-use rsa::{sha2::Sha256, Oaep, RsaPrivateKey, RsaPublicKey};
+use rsa::{sha2::{Sha256, Sha512_256}, Oaep, RsaPrivateKey, RsaPublicKey};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 use crate::{protocol::RWBytes, utils::BasicNonce, Token};
@@ -13,7 +13,8 @@ pub async fn read_full_packet_rsa(conn: &mut TcpStream, key: &RsaPrivateKey) -> 
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf).await?;
-    let decrypted = key.decrypt(Oaep::new::<Sha256>(), &packet_buf)?;
+    // FIXME: use sha3-512 instead
+    let decrypted = key.decrypt(Oaep::new::<Sha512_256>(), &packet_buf)?;
     let mut packet_buf = Bytes::from(decrypted);
     Ok(PacketIn::read(&mut packet_buf)?)
 }

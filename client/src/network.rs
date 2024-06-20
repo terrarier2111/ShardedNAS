@@ -3,7 +3,7 @@ use std::{io::Write, net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, ops::DerefM
 use bytes::BytesMut;
 use rand::{thread_rng, RngCore};
 use ring::{aead::{Aad, BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM}, rsa::PublicKey};
-use rsa::{pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey}, sha2::Sha256, Oaep, RsaPrivateKey, RsaPublicKey};
+use rsa::{pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey}, sha2::{Sha256, Sha512_256}, Oaep, RsaPrivateKey, RsaPublicKey};
 use swap_it::SwapIt;
 
 use crate::{config::Config, packet::{self, PacketIn, PacketOut}, protocol::RWBytes, utils::{current_time_millis, BasicNonce}};
@@ -63,7 +63,8 @@ impl NetworkClient {
         let mut buf = BytesMut::new();
         packet.write(&mut buf)?;
         let mut rng = thread_rng();
-        let encrypted = key.encrypt(&mut rng, Oaep::new::<Sha256>(), &buf)?;
+        // FIXME: use sha3-512 instead
+        let encrypted = key.encrypt(&mut rng, Oaep::new::<Sha512_256>(), &buf)?;
         let mut final_buf = BytesMut::new();
         (encrypted.len() as u64).write(&mut final_buf)?;
         final_buf.extend(encrypted);
