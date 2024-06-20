@@ -5,7 +5,7 @@ use std::{
     ops::DerefMut,
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::{
-    binary_to_hash, binary_to_str,
+    binary_to_hash,
     config::MetaCfg,
     packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut},
     protocol::PROTOCOL_VERSION,
@@ -81,7 +81,6 @@ pub struct Connection {
     conn: Arc<Mutex<TcpStream>>,
     pub addr: SocketAddr,
     encrypt_key: Mutex<SealingKey<BasicNonce>>,
-    curr_trans_idx: AtomicUsize,
     last_keep_alive: AtomicU64,
     shutdown: AtomicBool,
 }
@@ -94,7 +93,6 @@ impl Connection {
     ) {
         let conn = self.conn.clone();
         let id = self.id.clone();
-        let id_str = binary_to_str(&id);
         let hash = binary_to_hash(&id);
         tokio::spawn(async move {
             let mut key = decrypt_key;
@@ -185,13 +183,17 @@ impl Connection {
                     }
                     PacketIn::FinishedBackup => {
                         let mut cfg = self.cfg.load().clone();
-                        cfg.last_updates[self.curr_trans_idx.load(Ordering::Acquire)] =
-                            current_time_millis();
+                        if cfg.last_updates.is_empty() {
+                            cfg.last_updates.push(0);
+                        }
+                        cfg.last_updates[0] = current_time_millis();
                         fs::write(
-                            format!("./nas/instances/{}/meta.json", &id_str),
+                            format!("./nas/instances/{}/meta.json", &hash),
                             serde_json::to_string(&cfg).unwrap().as_bytes(),
                         )
                         .unwrap();
+                        // there's nothing to do anymore, so cut the connection
+                        let _ = self.shutdown(&server).await;
                     }
                 }
             }
@@ -362,7 +364,6 @@ impl PendingConn {
                     conn: Arc::new(Mutex::new(self.conn)),
                     addr: self.addr,
                     cfg: SwapIt::new(cfg),
-                    curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                     shutdown: AtomicBool::new(false),
                     encrypt_key: Mutex::new(encrypt_key),

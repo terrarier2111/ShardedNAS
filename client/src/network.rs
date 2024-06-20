@@ -1,27 +1,21 @@
 use std::{
-    io::Write,
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
-    ops::DerefMut,
-    str::FromStr,
-    sync::{
+    hint, io::Write, net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, ops::DerefMut, str::FromStr, sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
-    },
-    thread,
-    time::Duration,
+    }, thread, time::Duration
 };
 
 use bytes::BytesMut;
 use rand::{thread_rng, RngCore};
 use ring::aead::{Aad, BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM};
-use rsa::{sha2::Sha512_256, Oaep, RsaPublicKey};
+use rsa::{pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey}, sha2::{Digest, Sha512_256}, Oaep, Pss, RsaPrivateKey, RsaPublicKey};
 use swap_it::SwapIt;
 
 use crate::{
-    config::Config,
+    config::{Config, RegisterCfg},
     packet::{self, PacketIn, PacketOut},
-    protocol::RWBytes,
-    utils::{current_time_millis, BasicNonce},
+    protocol::{RWBytes, PROTOCOL_VERSION},
+    utils::{current_time_millis, BasicNonce}, Client,
 };
 
 pub struct NetworkClient {
@@ -63,7 +57,7 @@ impl NetworkClient {
             while client2.running.load(Ordering::Acquire) {
                 let millis = { cfg.load().timeout_millis };
                 thread::sleep(Duration::from_millis(millis / 2));
-                client2.write_packet(PacketOut::KeepAlive).unwrap();
+                let _ = client2.write_packet(PacketOut::KeepAlive);
             }
         });
         Ok((client, raw_key))
@@ -89,6 +83,7 @@ impl NetworkClient {
         Ok(())
     }
 
+    // FIXME: disconnect on write_packet failure
     pub fn write_packet(&self, packet: PacketOut) -> anyhow::Result<()> {
         let mut buf = BytesMut::new();
         packet.write(&mut buf)?;
@@ -102,5 +97,99 @@ impl NetworkClient {
         final_buf.extend(buf);
         self.write_conn.lock().unwrap().write_all(&final_buf)?;
         Ok(())
+    }
+
+    pub fn await_acknowledgement(&self) {
+        // TODO: reconsider these constants!
+        for _ in 0..10000 {
+            if self.acknowledged.load(Ordering::Acquire) {
+                self.acknowledged.store(false, Ordering::Release);
+                return;
+            }
+            for _ in 0..10 {
+                hint::spin_loop();
+            }
+        }
+        while !self.acknowledged.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        self.acknowledged.store(false, Ordering::Release);
+    }
+
+    pub fn shutdown(&self) -> anyhow::Result<bool> {
+        if self.running.compare_exchange(true, false, Ordering::Release, Ordering::Acquire).is_err() {
+            return Ok(false);
+        }
+        self.read_conn.lock().unwrap().shutdown(std::net::Shutdown::Both)?;
+        Ok(true)
+    }
+}
+
+pub fn connect(creds: &RegisterCfg, client: &Client) -> anyhow::Result<Arc<NetworkClient>> {
+    'outer: loop {
+        match NetworkClient::new(client.cfg.clone()) {
+            Ok((conn, key)) => {
+                conn.write_packet_rsa(
+                    packet::PacketOut::Login {
+                        version: PROTOCOL_VERSION,
+                        token: creds.token.clone(),
+                        key,
+                    },
+                    &RsaPublicKey::from_pkcs1_der(&creds.server_pub_key).unwrap(),
+                )
+                .unwrap();
+                let packet = conn.read_packet();
+                if let PacketIn::ChallengeRequest { challenge } = packet.unwrap() {
+                    let mut hasher = Sha512_256::new();
+                    hasher.update(&challenge);
+                    let hashed = hasher.finalize();
+                    let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key)
+                        .expect("Invalid private key")
+                        .sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha512_256>(), &hashed)
+                        .unwrap();
+                    conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed })
+                        .unwrap();
+                    if let Ok(PacketIn::LoginSuccess { max_frame_size }) = conn.read_packet() {
+                        conn.max_frame_size.store(max_frame_size, Ordering::Release);
+                        client.println("Successfully logged in");
+                    } else {
+                        client.println("Authentication failed");
+                        continue;
+                    }
+                } else {
+                    client.println("Received weird packet in login sequence");
+                    continue;
+                }
+
+                let conn2 = conn.clone();
+                thread::spawn(move || {
+                    let conn = conn2;
+                    while conn.running.load(Ordering::Acquire) {
+                        let packet = match conn.read_packet() {
+                            Ok(packet) => packet,
+                            Err(_) => break,
+                        };
+                        match packet {
+                            PacketIn::ChallengeRequest { .. } => unreachable!(),
+                            PacketIn::LoginSuccess { .. } => unreachable!(),
+                            PacketIn::KeepAlive => {
+                                conn
+                                    .last_keep_alive
+                                    .store(current_time_millis() as u64, Ordering::Release);
+                            }
+                            PacketIn::FrameRequest => {
+                                conn.acknowledged.store(true, Ordering::Release);
+                            }
+                        }
+                    }
+                });
+
+                break 'outer Ok(conn);
+            }
+            Err(_) => {
+                client.println("Connecting failed, retrying in 10 seconds.");
+                thread::sleep(Duration::from_secs(10));
+            }
+        }
     }
 }

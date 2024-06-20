@@ -1,7 +1,7 @@
 #![feature(duration_constructors)]
 
 use std::{
-    collections::HashMap, fs::{self, File, OpenOptions}, hint, io::Read, path::Path, sync::{
+    collections::HashMap, fs::{self, File, OpenOptions}, io::Read, path::Path, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     }, thread, time::Duration
@@ -12,14 +12,7 @@ use clitty::{
     ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
 use config::{Config, Meta, RegisterCfg};
-use network::NetworkClient;
-use packet::PacketIn;
-use protocol::PROTOCOL_VERSION;
-use rsa::{
-    pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
-    sha2::{Digest, Sha512_256},
-    Pss, RsaPrivateKey, RsaPublicKey,
-};
+use network::{connect, NetworkClient};
 use swap_it::SwapIt;
 use utils::current_time_millis;
 
@@ -49,53 +42,9 @@ fn main() {
         return;
     }
     let creds = RegisterCfg::load().unwrap().unwrap();
-    // FIXME: we only need a network client if the last backup is too old
-    let conn = 'outer: loop {
-        match NetworkClient::new(cfg.clone()) {
-            Ok((conn, key)) => {
-                conn.write_packet_rsa(
-                    packet::PacketOut::Login {
-                        version: PROTOCOL_VERSION,
-                        token: creds.token.clone(),
-                        key,
-                    },
-                    &RsaPublicKey::from_pkcs1_der(&creds.server_pub_key).unwrap(),
-                )
-                .unwrap();
-                let packet = conn.read_packet();
-                if let PacketIn::ChallengeRequest { challenge } = packet.unwrap() {
-                    let mut hasher = Sha512_256::new();
-                    hasher.update(&challenge);
-                    let hashed = hasher.finalize();
-                    let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key)
-                        .expect("Invalid private key")
-                        .sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha512_256>(), &hashed)
-                        .unwrap();
-                    conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed })
-                        .unwrap();
-                    if let Ok(PacketIn::LoginSuccess { max_frame_size }) = conn.read_packet() {
-                        conn.max_frame_size.store(max_frame_size, Ordering::Release);
-                        cli.println("Successfully logged in");
-                    } else {
-                        cli.println("Authentication failed");
-                        continue;
-                    }
-                } else {
-                    cli.println("Received weird packet in login sequence");
-                    continue;
-                }
-                break 'outer conn;
-            }
-            Err(_) => {
-                println!("Connecting failed, retrying in 10 seconds.");
-                thread::sleep(Duration::from_secs(10));
-            }
-        }
-    };
     let meta = Meta::load();
     let client = Arc::new(Client {
         cfg,
-        conn,
         cli,
         running: AtomicBool::new(true),
         meta: SwapIt::new(meta),
@@ -114,26 +63,6 @@ fn main() {
     thread::spawn(move || {
         let client = client2;
         loop {
-            let packet = client.conn.read_packet().unwrap();
-            match packet {
-                PacketIn::ChallengeRequest { .. } => unreachable!(),
-                PacketIn::LoginSuccess { .. } => unreachable!(),
-                PacketIn::KeepAlive => {
-                    client
-                        .conn
-                        .last_keep_alive
-                        .store(current_time_millis() as u64, Ordering::Release);
-                }
-                PacketIn::FrameRequest => {
-                    client.conn.acknowledged.store(true, Ordering::Release);
-                }
-            }
-        }
-    });
-    let client2 = client.clone();
-    thread::spawn(move || {
-        let client = client2;
-        loop {
             let dist = current_time_millis() - client.meta.load().last_update;
             if dist < Duration::from_days(1).as_millis() {
                 thread::sleep(Duration::from_millis(
@@ -143,7 +72,7 @@ fn main() {
             client.println("Trying to initiate update...");
             let backup_start = current_time_millis();
             let meta = client.meta.load();
-            let mut got_clearance = false;
+            let mut net_client = None;
             let mut fingerprints = HashMap::new();
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
@@ -154,16 +83,21 @@ fn main() {
                 let hash = calculate_fingerprint(path);
                 fingerprints.insert(path.to_string(), hash);
                 if meta.fingerprints.get(path).cloned() != Some(hash) {
-                    if !got_clearance {
-                        client
-                            .conn
+                    if net_client.is_none() {
+                        let new_client = connect(&creds, &client).unwrap();
+                        new_client
                             .write_packet(packet::PacketOut::BackupRequest)
                             .unwrap();
-                        client.await_acknowledgement();
-                        got_clearance = true;
+                        new_client.await_acknowledgement();
+                        net_client = Some(new_client);
                     }
-                    client.send_by_path(path);
+                    send_by_path(net_client.as_ref().unwrap(), path);
                 }
+            }
+
+            if let Some(net_client) = net_client {
+                let _ = net_client.write_packet(packet::PacketOut::FinishedBackup);
+                let _ = net_client.shutdown();
             }
 
             let new_cfg = Meta {
@@ -215,7 +149,6 @@ fn calculate_fingerprint(path: &str) -> u64 {
 pub struct Client {
     cfg: Arc<SwapIt<Config>>,
     meta: SwapIt<Meta>,
-    pub conn: Arc<NetworkClient>,
     cli: Arc<CmdLineInterface<Arc<Client>>>,
     running: AtomicBool,
 }
@@ -228,72 +161,6 @@ impl Client {
     fn update_meta(&self, cfg: Meta) {
         cfg.store();
         self.meta.store(cfg);
-    }
-
-    fn send_by_path<P: AsRef<Path>>(&self, path: P) {
-        let path = path.as_ref();
-        println!("sending {:?}", path);
-        if path.is_dir() {
-            for file in fs::read_dir(path).unwrap() {
-                if let Ok(file) = file {
-                    self.send_by_path(file.path());
-                } else {
-                    // FIXME: how do we handle errors?
-                    continue;
-                }
-            }
-        } else if path.is_file() {
-            // FIXME: make this threshold configurable by the server
-            const LARGE_THRESHOLD: u64 = 1024 * 1024 * 50;
-            if path.metadata().unwrap().len() > LARGE_THRESHOLD {
-                // split up file into digestible chunks
-                let frames = path.metadata().unwrap().len().div_ceil(LARGE_THRESHOLD);
-                let mut file = OpenOptions::new().read(true).open(path).unwrap();
-                for i in 0..frames {
-                    let mut content = vec![0; LARGE_THRESHOLD as usize];
-                    file.read_exact(&mut content).unwrap();
-                    let last_frame = i == frames - 1;
-                    println!("delivered large frame");
-                    self.conn
-                        .write_packet(packet::PacketOut::DeliverFrame {
-                            file_name: path.to_str().unwrap().to_string(),
-                            content,
-                            last_frame,
-                        })
-                        .unwrap();
-                    self.await_acknowledgement();
-                    // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
-                }
-            } else {
-                let content = fs::read(path).unwrap();
-                println!("delivered small frame");
-                self.conn
-                    .write_packet(packet::PacketOut::DeliverFrame {
-                        file_name: path.to_str().unwrap().to_string(),
-                        content,
-                        last_frame: true,
-                    })
-                    .unwrap();
-                self.await_acknowledgement();
-                // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
-            }
-        }
-    }
-
-    fn await_acknowledgement(&self) {
-        for _ in 0..10000 {
-            if self.conn.acknowledged.load(Ordering::Acquire) {
-                self.conn.acknowledged.store(false, Ordering::Release);
-                return;
-            }
-            for _ in 0..10 {
-                hint::spin_loop();
-            }
-        }
-        while !self.conn.acknowledged.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(1));
-        }
-        self.conn.acknowledged.store(false, Ordering::Release);
     }
 }
 
@@ -309,5 +176,55 @@ impl CommandImpl for CmdHelp {
             ctx.println(&format!("{}", cmd.name()));
         }
         Ok(())
+    }
+}
+
+fn send_by_path<P: AsRef<Path>>(conn: &NetworkClient, path: P) {
+    let path = path.as_ref();
+    println!("sending {:?}", path);
+    if path.is_dir() {
+        for file in fs::read_dir(path).unwrap() {
+            if let Ok(file) = file {
+                send_by_path(conn, file.path());
+            } else {
+                // FIXME: how do we handle errors?
+                continue;
+            }
+        }
+    } else if path.is_file() {
+        // FIXME: make this threshold configurable by the server
+        const LARGE_THRESHOLD: u64 = 1024 * 1024 * 50;
+        if path.metadata().unwrap().len() > LARGE_THRESHOLD {
+            // split up file into digestible chunks
+            let frames = path.metadata().unwrap().len().div_ceil(LARGE_THRESHOLD);
+            let mut file = OpenOptions::new().read(true).open(path).unwrap();
+            for i in 0..frames {
+                let mut content = vec![0; LARGE_THRESHOLD as usize];
+                file.read_exact(&mut content).unwrap();
+                let last_frame = i == frames - 1;
+                println!("delivered large frame");
+                conn
+                    .write_packet(packet::PacketOut::DeliverFrame {
+                        file_name: path.to_str().unwrap().to_string(),
+                        content,
+                        last_frame,
+                    })
+                    .unwrap();
+                conn.await_acknowledgement();
+                // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
+            }
+        } else {
+            let content = fs::read(path).unwrap();
+            println!("delivered small frame");
+            conn
+                .write_packet(packet::PacketOut::DeliverFrame {
+                    file_name: path.to_str().unwrap().to_string(),
+                    content,
+                    last_frame: true,
+                })
+                .unwrap();
+            conn.await_acknowledgement();
+            // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
+        }
     }
 }
