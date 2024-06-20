@@ -35,8 +35,8 @@ pub enum PacketOut {
     BackupRequest = 0x3,
     DeliverFrame {
         file_name: String,
-        content: Vec<u8>,
-        last_frame: bool,
+        content: Option<Vec<u8>>,
+        remaining_bytes: u64,
     } = 0x4,
     FinishedBackup = 0x5,
 }
@@ -65,8 +65,8 @@ impl RWBytes for PacketOut {
             0x3 => Ok(Self::BackupRequest),
             0x4 => Ok(Self::DeliverFrame {
                 file_name: String::read(src)?,
-                content: Vec::<u8>::read(src)?,
-                last_frame: bool::read(src)?,
+                content: Option::<Vec::<u8>>::read(src)?,
+                remaining_bytes: u64::read(src)?,
             }),
             0x5 => Ok(Self::FinishedBackup),
             _ => unreachable!("Unknown packet ordinal {ord}"),
@@ -93,11 +93,11 @@ impl RWBytes for PacketOut {
             Self::DeliverFrame {
                 file_name,
                 content,
-                last_frame,
+                remaining_bytes,
             } => {
                 file_name.write(dst)?;
                 content.write(dst)?;
-                last_frame.write(dst)
+                remaining_bytes.write(dst)
             }
             Self::ChallengeResponse { val } => val.write(dst),
             Self::KeepAlive => Ok(()),

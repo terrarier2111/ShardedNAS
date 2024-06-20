@@ -30,7 +30,7 @@ use crate::{
     config::MetaCfg,
     packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut},
     protocol::PROTOCOL_VERSION,
-    utils::{current_time_millis, BasicNonce},
+    utils::{current_time_millis, remove_path, BasicNonce},
     Server, Token,
 };
 
@@ -113,11 +113,12 @@ impl Connection {
                         // request first frame,
                         // ignore errors for now
                         let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
+                        server.println(&format!("Client {} started backup...", hash));
                     }
                     PacketIn::DeliverFrame {
                         file_name,
                         content,
-                        last_frame,
+                        remaining_bytes,
                     } => {
                         if file_name.contains("..") {
                             // FIXME: kill connection, as it attempted to perform bad file actions
@@ -150,23 +151,31 @@ impl Connection {
                                 .map(|name| name.to_str().unwrap())
                                 .unwrap_or(file_name.as_str())
                         );
-                        OpenOptions::new()
-                            .write(true)
-                            .append(true)
-                            .create(true)
-                            .open(&tmp_path)
-                            .unwrap()
-                            .write_all(&content)
-                            .unwrap();
-                        if last_frame {
-                            // replace original file
-                            fs::copy(
-                                &tmp_path,
-                                &format!("./nas/instances/{}/storage/{}", &hash, file_name),
-                            )
-                            .unwrap();
-                            // clean up tmp file
-                            fs::remove_file(&tmp_path).unwrap();
+                        match content {
+                            Some(content) => {
+                                OpenOptions::new()
+                                    .write(true)
+                                    .append(true)
+                                    .create(true)
+                                    .open(&tmp_path)
+                                    .unwrap()
+                                    .write_all(&content)
+                                    .unwrap();
+                                let last_frame = remaining_bytes == 0;
+                                if last_frame {
+                                    // replace original file
+                                    fs::copy(
+                                        &tmp_path,
+                                        &format!("./nas/instances/{}/storage/{}", &hash, file_name),
+                                    )
+                                    .unwrap();
+                                    // clean up tmp file
+                                    fs::remove_file(&tmp_path).unwrap();
+                                }
+                            },
+                            None => {
+                                remove_path(file_name.as_str()).unwrap();
+                            },
                         }
 
                         // ignore errors for now
@@ -194,6 +203,7 @@ impl Connection {
                         .unwrap();
                         // there's nothing to do anymore, so cut the connection
                         let _ = self.shutdown(&server).await;
+                        server.println(&format!("Client {} finished backup", hash));
                     }
                 }
             }

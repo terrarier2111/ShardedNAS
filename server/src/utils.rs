@@ -20,6 +20,13 @@ pub fn clear_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
     Ok(())
 }
 
+pub fn remove_path<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    if path.as_ref().is_dir() {
+        return fs::remove_dir_all(path);
+    }
+    fs::remove_file(path)
+}
+
 pub struct BasicNonce {
     cnt: u64,
 }

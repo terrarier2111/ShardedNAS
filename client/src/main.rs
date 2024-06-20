@@ -74,10 +74,19 @@ fn main() {
             let meta = client.meta.load();
             let mut net_client = None;
             let mut fingerprints = HashMap::new();
+            // FIXME: detect deleted files in backup folders
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
-                    // FIXME: tell backup server that this just doesn't exist
-                    client.println(&format!("Can't read \"{}\"", path));
+                    client.println(&format!("[Warn] Can't read \"{}\"", path));
+                    if net_client.is_none() {
+                        let new_client = connect(&creds, &client).unwrap();
+                        new_client
+                            .write_packet(packet::PacketOut::BackupRequest)
+                            .unwrap();
+                        new_client.await_acknowledgement();
+                        net_client = Some(new_client);
+                    }
+                    net_client.as_ref().unwrap().write_packet(packet::PacketOut::DeliverFrame { file_name: path.clone(), content: None, remaining_bytes: 0 }).unwrap();
                     continue;
                 }
                 let hash = calculate_fingerprint(path);
@@ -194,20 +203,20 @@ fn send_by_path<P: AsRef<Path>>(conn: &NetworkClient, path: P) {
     } else if path.is_file() {
         // FIXME: make this threshold configurable by the server
         const LARGE_THRESHOLD: u64 = 1024 * 1024 * 50;
-        if path.metadata().unwrap().len() > LARGE_THRESHOLD {
+        let initial_size = path.metadata().unwrap().len();
+        if initial_size > LARGE_THRESHOLD {
             // split up file into digestible chunks
-            let frames = path.metadata().unwrap().len().div_ceil(LARGE_THRESHOLD);
+            let frames = initial_size.div_ceil(LARGE_THRESHOLD);
             let mut file = OpenOptions::new().read(true).open(path).unwrap();
             for i in 0..frames {
                 let mut content = vec![0; LARGE_THRESHOLD as usize];
                 file.read_exact(&mut content).unwrap();
-                let last_frame = i == frames - 1;
                 println!("delivered large frame");
                 conn
                     .write_packet(packet::PacketOut::DeliverFrame {
                         file_name: path.to_str().unwrap().to_string(),
-                        content,
-                        last_frame,
+                        content: Some(content),
+                        remaining_bytes: initial_size - i * LARGE_THRESHOLD,
                     })
                     .unwrap();
                 conn.await_acknowledgement();
@@ -219,8 +228,8 @@ fn send_by_path<P: AsRef<Path>>(conn: &NetworkClient, path: P) {
             conn
                 .write_packet(packet::PacketOut::DeliverFrame {
                     file_name: path.to_str().unwrap().to_string(),
-                    content,
-                    last_frame: true,
+                    content: Some(content),
+                    remaining_bytes: 0,
                 })
                 .unwrap();
             conn.await_acknowledgement();
