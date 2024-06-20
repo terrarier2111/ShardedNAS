@@ -87,9 +87,26 @@ fn main() {
                         net_client = Some(new_client);
                     }
                     net_client.as_ref().unwrap().write_packet(packet::PacketOut::DeliverFrame { file_name: path.clone(), content: None, remaining_bytes: 0 }).unwrap();
+                    net_client.as_ref().unwrap().await_acknowledgement();
                     continue;
                 }
                 send_by_path(&mut net_client, path, &meta.fingerprints, &mut fingerprints, &creds, &client);
+            }
+
+            for entry in meta.fingerprints.keys() {
+                if fingerprints.get(entry).is_none() {
+                    // connect to server if no client exists yet
+                    if net_client.is_none() {
+                        let new_client = connect(&creds, &client).unwrap();
+                        new_client
+                            .write_packet(packet::PacketOut::BackupRequest)
+                            .unwrap();
+                        new_client.await_acknowledgement();
+                        net_client = Some(new_client);
+                    }
+                    net_client.as_ref().unwrap().write_packet(packet::PacketOut::DeliverFrame { file_name: entry.clone(), content: None, remaining_bytes: 0 }).unwrap();
+                    net_client.as_ref().unwrap().await_acknowledgement();
+                }
             }
 
             if let Some(net_client) = net_client {
