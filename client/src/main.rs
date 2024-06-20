@@ -74,7 +74,6 @@ fn main() {
             let meta = client.meta.load();
             let mut net_client = None;
             let mut fingerprints = HashMap::new();
-            // FIXME: detect deleted files in backup folders
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
                     client.println(&format!("[Warn] Can't read \"{}\"", path));
@@ -147,18 +146,6 @@ fn calculate_fingerprint<P: AsRef<Path>>(path: P) -> u64 {
         hasher.finalize_xof().read_exact(&mut result).unwrap();
         return u64::from_ne_bytes(result);
     }
-    if path.as_ref().is_dir() {
-        let mut hasher = blake3::Hasher::new();
-        let dir = fs::read_dir(path).unwrap();
-        for file in dir {
-            if let Ok(file) = file {
-                hasher.update(&calculate_fingerprint(file.path().to_str().unwrap()).to_ne_bytes());
-            }
-        }
-        let mut result = [0; 8];
-        hasher.finalize_xof().read_exact(&mut result).unwrap();
-        return u64::from_ne_bytes(result);
-    }
     unreachable!()
 }
 
@@ -223,22 +210,21 @@ fn send_by_path(conn: &mut Option<Arc<NetworkClient>>, src_path: &str, old_hashe
         }
         let conn = conn.as_ref().unwrap();
         println!("sending {:?}", path);
-        // FIXME: make this threshold configurable by the server
-        const LARGE_THRESHOLD: u64 = 1024 * 1024 * 50;
+        let threshold = conn.max_frame_size.load(Ordering::Acquire);
         let initial_size = path.metadata().unwrap().len();
-        if initial_size > LARGE_THRESHOLD {
+        if initial_size > threshold {
             // split up file into digestible chunks
-            let frames = initial_size.div_ceil(LARGE_THRESHOLD);
+            let frames = initial_size.div_ceil(threshold);
             let mut file = OpenOptions::new().read(true).open(path).unwrap();
             for i in 0..frames {
-                let mut content = vec![0; LARGE_THRESHOLD as usize];
+                let mut content = vec![0; threshold as usize];
                 file.read_exact(&mut content).unwrap();
                 println!("delivered large frame");
                 conn
                     .write_packet(packet::PacketOut::DeliverFrame {
                         file_name: path.to_str().unwrap().to_string(),
                         content: Some(content),
-                        remaining_bytes: initial_size - i * LARGE_THRESHOLD,
+                        remaining_bytes: initial_size - i * threshold,
                     })
                     .unwrap();
                 conn.await_acknowledgement();
