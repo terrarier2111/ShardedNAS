@@ -110,8 +110,11 @@ impl Connection {
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
                     PacketIn::BackupRequest => {
-                        // FIXME: handle request
-                        println!("got bckup request");
+                        // FIXME: determine whether we are currently under load and wait until there is less load
+
+                        // request first frame,
+                        // ignore errors for now
+                        let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
                     }
                     PacketIn::DeliverFrame {
                         file_name,
