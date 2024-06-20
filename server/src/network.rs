@@ -1,11 +1,12 @@
 use std::{
-    cell::UnsafeCell, fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
+    fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     }, time::Duration
 };
 
 use rand::RngCore;
+use ring::aead::{BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM};
 use rsa::{pkcs1::DecodeRsaPublicKey, sha2::{Digest, Sha256}, Pss, RsaPublicKey};
 use swap_it::SwapIt;
 use tokio::{
@@ -15,7 +16,7 @@ use tokio::{
 };
 
 use crate::{
-    binary_to_hash, binary_to_str, config::MetaCfg, packet::{read_full_packet, write_full_packet, PacketIn, PacketOut}, protocol::{RWBytes, PROTOCOL_VERSION}, utils::current_time_millis, Server, Token
+    binary_to_hash, binary_to_str, config::MetaCfg, packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut}, protocol::PROTOCOL_VERSION, utils::{current_time_millis, BasicNonce}, Server, Token
 };
 
 pub struct NetworkServer {
@@ -64,22 +65,23 @@ pub struct Connection {
     cfg: SwapIt<MetaCfg>,
     conn: Arc<Mutex<TcpStream>>,
     pub addr: SocketAddr,
-    key: RsaPublicKey,
+    encrypt_key: Mutex<SealingKey<BasicNonce>>,
     curr_trans_idx: AtomicUsize,
     last_keep_alive: AtomicU64,
     shutdown: AtomicBool,
 }
 
 impl Connection {
-    async fn handle_packets(self: Arc<Self>, server: Arc<Server>) {
+    async fn handle_packets(self: Arc<Self>, server: Arc<Server>, decrypt_key: OpeningKey<BasicNonce>) {
         let conn = self.conn.clone();
         let id = self.id.clone();
         let id_str = binary_to_str(&id);
         let hash = binary_to_hash(&id);
         tokio::spawn(async move {
+            let mut key = decrypt_key;
             // FIXME: terminate on server shutdown
             while server.is_running() && self.is_running() {
-                let packet = match read_full_packet(conn.lock().await.deref_mut(), &server.key.key).await {
+                let packet = match read_full_packet(conn.lock().await.deref_mut(), &mut key).await {
                     Ok(packet) => packet,
                     Err(_) => {
                         let _ = self.shutdown(&server).await;
@@ -166,7 +168,7 @@ impl Connection {
     }
 
     async fn write_packet(&self, packet: PacketOut, server: &Arc<Server>) -> anyhow::Result<()> {
-        match write_full_packet(self.conn.lock().await.deref_mut(), packet, &self.key).await {
+        match write_full_packet(self.conn.lock().await.deref_mut(), packet, self.encrypt_key.lock().await.deref_mut()).await {
             Ok(_) => Ok(()),
             Err(error) => {
                 // the error we deliver is more important than the disconnect error
@@ -187,12 +189,14 @@ impl PendingConn {
     async fn await_login(mut self) {
         self.conn.set_nodelay(true).expect("Failure setting no_delay");
         tokio::spawn(async move {
-            let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet(&mut self.conn, &self.server.key.key)).await {
+            println!("listen on conn");
+            let login = match tokio::time::timeout(Duration::from_millis(self.server.cfg.load().connect_timeout_ms), read_full_packet_rsa(&mut self.conn, &self.server.key.key)).await {
                 Ok(Ok(packet)) => packet,
                 // a timeout or an error occoured
                 Err(_) | Ok(Err(_)) => return,
             };
-            if let PacketIn::Login { token, version } = login {
+            if let PacketIn::Login { version, token, key } = login {
+                println!("got login");
                 if version != PROTOCOL_VERSION {
                     self.server.println(&format!("A client tried to connect with an incompatible version ({})", version));
                     return;
@@ -217,15 +221,20 @@ impl PendingConn {
                         return;
                     },
                 };
-                let key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
+                let mut encrypt_key = match UnboundKey::new(&AES_256_GCM, &key) {
+                    Ok(key) => SealingKey::new(key, BasicNonce::new()),
+                    Err(_) => return,
+                };
+                let mut decrypt_key = OpeningKey::new(UnboundKey::new(&AES_256_GCM, &key).unwrap(), BasicNonce::new());
+
                 let mut challenge = [0; 256];
                 rand::thread_rng().fill_bytes(&mut challenge);
 
-                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }, &key).await {
+                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::ChallengeRequest { challenge: challenge.to_vec() }, &mut encrypt_key).await {
                     return;
                 }
                 
-                let packet = match read_full_packet(&mut self.conn, &self.server.key.key).await {
+                let packet = match read_full_packet(&mut self.conn, &mut decrypt_key).await {
                     Ok(packet) => packet,
                     Err(_) => {
                         // couldn't read data from connection
@@ -250,7 +259,7 @@ impl PendingConn {
                     return;
                 }
 
-                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }, &key).await {
+                if let Err(_) = write_full_packet(&mut self.conn, PacketOut::LoginSuccess { max_frame_size: self.server.cfg.load().connect_timeout_ms }, &mut encrypt_key).await {
                     self.server.println(&format!("The client {} immediately disconnected", binary_to_hash(&token)));
                     return;
                 }
@@ -263,9 +272,9 @@ impl PendingConn {
                     curr_trans_idx: AtomicUsize::new(IDLE_TRANSMISSION),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                     shutdown: AtomicBool::new(false),
-                    key,
+                    encrypt_key: Mutex::new(encrypt_key),
                 });
-                conn.clone().handle_packets(self.server.clone()).await;
+                conn.clone().handle_packets(self.server.clone(), decrypt_key).await;
                 self.server.network.clients.lock().await.push(conn);
                 self.server
                     .println(&format!("Client {} connected", token_str));

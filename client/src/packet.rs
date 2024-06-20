@@ -2,25 +2,25 @@ use std::{io::Read, net::TcpStream};
 
 use bytes::{Buf, BufMut, Bytes};
 use ordinalizer::Ordinal;
-use rsa::{sha2::Sha256, Oaep, RsaPrivateKey};
+use ring::aead::{Aad, OpeningKey};
 
-use crate::{protocol::RWBytes, Token};
+use crate::{protocol::RWBytes, utils::BasicNonce, Token};
 
-pub fn read_full_packet(conn: &mut TcpStream, key: &RsaPrivateKey) -> anyhow::Result<PacketIn> {
+pub fn read_full_packet(conn: &mut TcpStream, key: &mut OpeningKey<BasicNonce>) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
     conn.read_exact(&mut len_buf)?;
     let len = u64::from_le_bytes(len_buf) as usize;
     let mut packet_buf = vec![0; len];
     conn.read_exact(&mut packet_buf)?;
-    let decrypted = key.decrypt(Oaep::new::<Sha256>(), &packet_buf)?;
-    let mut packet_buf = Bytes::from(decrypted);
+    key.open_in_place(Aad::empty(), &mut packet_buf).unwrap();
+    let mut packet_buf = Bytes::from(packet_buf);
     Ok(PacketIn::read(&mut packet_buf)?)
 }
 
 #[derive(Ordinal)]
 #[repr(u8)]
 pub enum PacketOut {
-    Login { token: Token, version: u16 } = 0x0,
+    Login { version: u16, token: Token, key: [u8; 32] } = 0x0,
     ChallengeResponse { val: Vec<u8>, } = 0x1,
     KeepAlive = 0x2,
     BackupRequest = 0x3,
@@ -35,8 +35,15 @@ impl RWBytes for PacketOut {
         let ord = src.get_u8();
         match ord {
             0x0 => Ok(Self::Login {
-                token: Vec::<u8>::read(src)?,
                 version: u16::read(src)?,
+                token: Vec::<u8>::read(src)?,
+                key: {
+                    let mut key = [0; 32];
+                    for i in 0..32 {
+                        key[i] = u8::read(src)?;
+                    }
+                    key
+                },
             }),
             0x1 => Ok(Self::ChallengeResponse { val: Vec::<u8>::read(src)? }),
             0x2 => Ok(Self::KeepAlive),
@@ -54,9 +61,13 @@ impl RWBytes for PacketOut {
     fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
         dst.put_u8(self.ordinal() as u8);
         match self {
-            Self::Login { token, version } => {
+            Self::Login { token, version, key } => {
+                version.write(dst)?;
                 token.write(dst)?;
-                version.write(dst)
+                for i in 0..key.len() {
+                    key[i].write(dst)?;
+                }
+                Ok(())
             },
             Self::BackupRequest => Ok(()),
             Self::FinishedBackup => Ok(()),

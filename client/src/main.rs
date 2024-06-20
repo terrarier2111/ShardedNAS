@@ -7,7 +7,7 @@ use config::{Config, Meta, RegisterCfg};
 use network::NetworkClient;
 use packet::PacketIn;
 use protocol::PROTOCOL_VERSION;
-use rsa::{pkcs1::DecodeRsaPrivateKey, sha2::{digest::core_api::VariableOutputCore, Digest, Sha256, Sha512VarCore}, Pss, RsaPrivateKey};
+use rsa::{pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey}, sha2::{digest::core_api::VariableOutputCore, Digest, Sha256, Sha512VarCore}, Pss, RsaPrivateKey, RsaPublicKey};
 use swap_it::SwapIt;
 use utils::current_time_millis;
 
@@ -37,9 +37,9 @@ fn main() {
     let cfg = Arc::new(SwapIt::new(Config::load()));
     // FIXME: we only need a network client if the last backup is too old
     let conn = 'outer: loop {
-        match NetworkClient::new(cfg.clone(), creds.server_pub_key.clone(), creds.priv_key.clone()) {
-            Ok(conn) => {
-                conn.write_packet(packet::PacketOut::Login { token: creds.token.clone(), version: PROTOCOL_VERSION, }).unwrap();
+        match NetworkClient::new(cfg.clone()) {
+            Ok((conn, key)) => {
+                conn.write_packet_rsa(packet::PacketOut::Login { version: PROTOCOL_VERSION, token: creds.token.clone(), key }, &RsaPublicKey::from_pkcs1_der(&creds.server_pub_key).unwrap()).unwrap();
                 let packet = conn.read_packet();
                 if let PacketIn::ChallengeRequest { challenge } = packet.unwrap() {
                     let mut hasher = Sha256::new();
