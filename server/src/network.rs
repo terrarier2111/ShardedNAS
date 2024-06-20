@@ -174,7 +174,7 @@ impl Connection {
                                 }
                             },
                             None => {
-                                remove_path(file_name.as_str()).unwrap();
+                                remove_path(&format!("./nas/instances/{}/storage/{}", &hash, file_name)).unwrap();
                             },
                         }
 
@@ -201,9 +201,9 @@ impl Connection {
                             serde_json::to_string(&cfg).unwrap().as_bytes(),
                         )
                         .unwrap();
+                        server.println(&format!("Client {} finished backup", hash));
                         // there's nothing to do anymore, so cut the connection
                         let _ = self.shutdown(&server).await;
-                        server.println(&format!("Client {} finished backup", hash));
                     }
                 }
             }
