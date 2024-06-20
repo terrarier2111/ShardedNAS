@@ -89,19 +89,7 @@ fn main() {
                     net_client.as_ref().unwrap().write_packet(packet::PacketOut::DeliverFrame { file_name: path.clone(), content: None, remaining_bytes: 0 }).unwrap();
                     continue;
                 }
-                let hash = calculate_fingerprint(path);
-                fingerprints.insert(path.to_string(), hash);
-                if meta.fingerprints.get(path).cloned() != Some(hash) {
-                    if net_client.is_none() {
-                        let new_client = connect(&creds, &client).unwrap();
-                        new_client
-                            .write_packet(packet::PacketOut::BackupRequest)
-                            .unwrap();
-                        new_client.await_acknowledgement();
-                        net_client = Some(new_client);
-                    }
-                    send_by_path(net_client.as_ref().unwrap(), path);
-                }
+                send_by_path(&mut net_client, path, &meta.fingerprints, &mut fingerprints, &creds, &client);
             }
 
             if let Some(net_client) = net_client {
@@ -123,8 +111,10 @@ fn main() {
     }
 }
 
-fn calculate_fingerprint(path: &str) -> u64 {
-    if Path::new(path).is_file() {
+// FIXME: don't calculate fingerprints of directories, just store the fingerprints of the files contained inside them
+// FIXME: to detect deleted files/not needlessly sending over the rest of the directory if only a single file inside it changes
+fn calculate_fingerprint<P: AsRef<Path>>(path: P) -> u64 {
+    if path.as_ref().is_file() {
         const CHUNK_SIZE: usize = 1024 * 4 * 512;
 
         let mut hasher = blake3::Hasher::new();
@@ -140,7 +130,7 @@ fn calculate_fingerprint(path: &str) -> u64 {
         hasher.finalize_xof().read_exact(&mut result).unwrap();
         return u64::from_ne_bytes(result);
     }
-    if Path::new(path).is_dir() {
+    if path.as_ref().is_dir() {
         let mut hasher = blake3::Hasher::new();
         let dir = fs::read_dir(path).unwrap();
         for file in dir {
@@ -188,19 +178,34 @@ impl CommandImpl for CmdHelp {
     }
 }
 
-fn send_by_path<P: AsRef<Path>>(conn: &NetworkClient, path: P) {
-    let path = path.as_ref();
-    println!("sending {:?}", path);
+fn send_by_path(conn: &mut Option<Arc<NetworkClient>>, src_path: &str, old_hashes: &HashMap<String, u64>, new_hashes: &mut HashMap<String, u64>, creds: &RegisterCfg, client: &Client) {
+    let path = Path::new(src_path);
     if path.is_dir() {
         for file in fs::read_dir(path).unwrap() {
             if let Ok(file) = file {
-                send_by_path(conn, file.path());
+                send_by_path(conn, file.path().to_str().unwrap(), old_hashes, new_hashes, creds, client);
             } else {
                 // FIXME: how do we handle errors?
                 continue;
             }
         }
     } else if path.is_file() {
+        let new_hash = calculate_fingerprint(path);
+        new_hashes.insert(src_path.to_string(), new_hash);
+        if old_hashes.get(src_path).cloned() == Some(new_hash) {
+            // no change
+            return;
+        }
+        if conn.is_none() {
+            let new_client = connect(creds, client).unwrap();
+            new_client
+                .write_packet(packet::PacketOut::BackupRequest)
+                .unwrap();
+            new_client.await_acknowledgement();
+            *conn = Some(new_client);
+        }
+        let conn = conn.as_ref().unwrap();
+        println!("sending {:?}", path);
         // FIXME: make this threshold configurable by the server
         const LARGE_THRESHOLD: u64 = 1024 * 1024 * 50;
         let initial_size = path.metadata().unwrap().len();
