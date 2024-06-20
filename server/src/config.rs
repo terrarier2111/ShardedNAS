@@ -1,12 +1,13 @@
 use std::{collections::HashSet, fs, path::Path, time::Duration};
 
+use bytes::BytesMut;
 use rsa::{
     pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey},
     RsaPrivateKey,
 };
 use serde_derive::{Deserialize, Serialize};
 
-use crate::Token;
+use crate::{protocol::RWBytes, Token};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -75,9 +76,21 @@ pub struct MetaCfg {
     pub pub_key: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
 pub struct RegisterCfg {
     pub priv_key: Vec<u8>,
     pub server_pub_key: Vec<u8>,
     pub token: Vec<u8>,
+}
+
+impl RegisterCfg {
+
+    pub fn store<P: AsRef<Path>>(self, path: P) -> anyhow::Result<()> {
+        let mut buf = BytesMut::new();
+        self.priv_key.write(&mut buf)?;
+        self.server_pub_key.write(&mut buf)?;
+        self.token.write(&mut buf)?;
+        fs::write(path, &buf)?;
+        Ok(())
+    }
+
 }

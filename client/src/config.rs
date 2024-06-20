@@ -1,6 +1,9 @@
 use std::{collections::HashMap, fs, path::Path};
 
+use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
+
+use crate::protocol::RWBytes;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -56,9 +59,26 @@ impl Meta {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 pub struct RegisterCfg {
     pub priv_key: Vec<u8>,
     pub server_pub_key: Vec<u8>,
     pub token: Vec<u8>,
+}
+
+impl RegisterCfg {
+
+    pub const PATH: &str = "./nas/credentials.key";
+
+    pub fn load() -> anyhow::Result<Option<Self>> {
+        if !Path::new(Self::PATH).exists() {
+            return Ok(None);
+        }
+        let mut data = Bytes::from_iter(fs::read(Self::PATH)?);
+        let priv_key = Vec::<u8>::read(&mut data)?;
+        let server_pub_key = Vec::<u8>::read(&mut data)?;
+        let token = Vec::<u8>::read(&mut data)?;
+
+        Ok(Some(Self { priv_key, server_pub_key, token }))
+    }
+
 }

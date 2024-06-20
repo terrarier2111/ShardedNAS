@@ -42,14 +42,13 @@ fn main() {
     let cli = Arc::new(CmdLineInterface::new(window));
     let dir_path = "./nas/";
     fs::create_dir_all(dir_path).unwrap();
-    if !Path::new("./nas/credentials.json").exists() {
+    let cfg = Arc::new(SwapIt::new(Config::load()));
+    if !Path::new(RegisterCfg::PATH).exists() {
         cli.println("Got no credentials, shutting down in 10 seconds...");
         thread::sleep(Duration::from_secs(10));
         return;
     }
-    let creds: RegisterCfg =
-        serde_json::from_str(&fs::read_to_string("./nas/credentials.json").unwrap()).unwrap();
-    let cfg = Arc::new(SwapIt::new(Config::load()));
+    let creds = RegisterCfg::load().unwrap().unwrap();
     // FIXME: we only need a network client if the last backup is too old
     let conn = 'outer: loop {
         match NetworkClient::new(cfg.clone()) {
