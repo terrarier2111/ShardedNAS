@@ -1,4 +1,9 @@
-use std::{fs, io, mem::size_of, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs, io,
+    mem::size_of,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ring::aead::{Nonce, NonceSequence, NONCE_LEN};
 
@@ -20,14 +25,10 @@ pub struct BasicNonce {
 }
 
 impl BasicNonce {
-
     #[inline(always)]
     pub const fn new() -> Self {
-        Self {
-            cnt: 2,
-        }
+        Self { cnt: 2 }
     }
-
 }
 
 impl NonceSequence for BasicNonce {

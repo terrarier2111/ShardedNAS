@@ -11,16 +11,24 @@ pub struct Config {
 }
 
 impl Config {
-
     const CFG_PATH: &str = "./nas/config.json";
 
     pub fn load() -> Self {
         if !Path::new(Self::CFG_PATH).exists() {
-            fs::write(Self::CFG_PATH, serde_json::to_string_pretty(&Self { dst: "127.0.0.1".to_string(), port: 28462, backup_locations: vec![], timeout_millis: 30000 }).unwrap()).unwrap();
+            fs::write(
+                Self::CFG_PATH,
+                serde_json::to_string_pretty(&Self {
+                    dst: "127.0.0.1".to_string(),
+                    port: 28462,
+                    backup_locations: vec![],
+                    timeout_millis: 30000,
+                })
+                .unwrap(),
+            )
+            .unwrap();
         }
         serde_json::from_str(&fs::read_to_string(Self::CFG_PATH).unwrap()).unwrap()
     }
-
 }
 
 #[derive(Serialize, Deserialize)]
@@ -31,7 +39,6 @@ pub struct Meta {
 }
 
 impl Meta {
-
     const META_PATH: &str = "./nas/meta.json";
 
     pub fn load() -> Self {
@@ -47,7 +54,6 @@ impl Meta {
     pub fn store(&self) {
         fs::write(Self::META_PATH, serde_json::to_string_pretty(self).unwrap()).unwrap();
     }
-
 }
 
 #[derive(Serialize, Deserialize)]

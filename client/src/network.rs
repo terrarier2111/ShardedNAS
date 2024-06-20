@@ -1,12 +1,28 @@
-use std::{io::Write, net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, ops::DerefMut, str::FromStr, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex}, thread, time::Duration};
+use std::{
+    io::Write,
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
+    ops::DerefMut,
+    str::FromStr,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::Duration,
+};
 
 use bytes::BytesMut;
 use rand::{thread_rng, RngCore};
-use ring::{aead::{Aad, BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM}, rsa::PublicKey};
-use rsa::{pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey}, sha2::{Sha256, Sha512_256}, Oaep, RsaPrivateKey, RsaPublicKey};
+use ring::aead::{Aad, BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM};
+use rsa::{sha2::Sha512_256, Oaep, RsaPublicKey};
 use swap_it::SwapIt;
 
-use crate::{config::Config, packet::{self, PacketIn, PacketOut}, protocol::RWBytes, utils::{current_time_millis, BasicNonce}};
+use crate::{
+    config::Config,
+    packet::{self, PacketIn, PacketOut},
+    protocol::RWBytes,
+    utils::{current_time_millis, BasicNonce},
+};
 
 pub struct NetworkClient {
     read_conn: Mutex<TcpStream>,
@@ -20,12 +36,12 @@ pub struct NetworkClient {
 }
 
 impl NetworkClient {
-
     pub fn new(cfg: Arc<SwapIt<Config>>) -> anyhow::Result<(Arc<Self>, [u8; 32])> {
         let t_cfg = cfg.load();
         let addr = t_cfg.dst.as_str();
         let port = t_cfg.port;
-        let stream = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::from_str(addr)?), port))?;
+        let stream =
+            TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::from_str(addr)?), port))?;
 
         let mut raw_key = [0; 32];
         thread_rng().fill_bytes(&mut raw_key);
@@ -45,9 +61,7 @@ impl NetworkClient {
         let client2 = client.clone();
         thread::spawn(move || {
             while client2.running.load(Ordering::Acquire) {
-                let millis = {
-                    cfg.load().timeout_millis
-                };
+                let millis = { cfg.load().timeout_millis };
                 thread::sleep(Duration::from_millis(millis / 2));
                 client2.write_packet(PacketOut::KeepAlive).unwrap();
             }
@@ -56,7 +70,10 @@ impl NetworkClient {
     }
 
     pub fn read_packet(&self) -> anyhow::Result<PacketIn> {
-        packet::read_full_packet(self.read_conn.lock().unwrap().deref_mut(), self.decryption_key.lock().unwrap().deref_mut())
+        packet::read_full_packet(
+            self.read_conn.lock().unwrap().deref_mut(),
+            self.decryption_key.lock().unwrap().deref_mut(),
+        )
     }
 
     pub fn write_packet_rsa(&self, packet: PacketOut, key: &RsaPublicKey) -> anyhow::Result<()> {
@@ -75,12 +92,15 @@ impl NetworkClient {
     pub fn write_packet(&self, packet: PacketOut) -> anyhow::Result<()> {
         let mut buf = BytesMut::new();
         packet.write(&mut buf)?;
-        self.encryption_key.lock().unwrap().seal_in_place_append_tag(Aad::empty(), &mut buf).unwrap();
+        self.encryption_key
+            .lock()
+            .unwrap()
+            .seal_in_place_append_tag(Aad::empty(), &mut buf)
+            .unwrap();
         let mut final_buf = BytesMut::new();
         (buf.len() as u64).write(&mut final_buf)?;
         final_buf.extend(buf);
         self.write_conn.lock().unwrap().write_all(&final_buf)?;
         Ok(())
     }
-
 }

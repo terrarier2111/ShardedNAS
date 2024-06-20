@@ -1,13 +1,18 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use ordinalizer::Ordinal;
-use rand::{rngs::OsRng, thread_rng};
-use ring::aead::{self, Aad, BoundKey, OpeningKey, SealingKey};
-use rsa::{sha2::{Sha256, Sha512_256}, Oaep, RsaPrivateKey, RsaPublicKey};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+use ring::aead::{Aad, OpeningKey, SealingKey};
+use rsa::{sha2::Sha512_256, Oaep, RsaPrivateKey};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 
 use crate::{protocol::RWBytes, utils::BasicNonce, Token};
 
-pub async fn read_full_packet_rsa(conn: &mut TcpStream, key: &RsaPrivateKey) -> anyhow::Result<PacketIn> {
+pub async fn read_full_packet_rsa(
+    conn: &mut TcpStream,
+    key: &RsaPrivateKey,
+) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
     conn.read_exact(&mut len_buf).await?;
     let len = u64::from_le_bytes(len_buf) as usize;
@@ -19,7 +24,10 @@ pub async fn read_full_packet_rsa(conn: &mut TcpStream, key: &RsaPrivateKey) -> 
     Ok(PacketIn::read(&mut packet_buf)?)
 }
 
-pub async fn read_full_packet(conn: &mut TcpStream, key: &mut OpeningKey<BasicNonce>) -> anyhow::Result<PacketIn> {
+pub async fn read_full_packet(
+    conn: &mut TcpStream,
+    key: &mut OpeningKey<BasicNonce>,
+) -> anyhow::Result<PacketIn> {
     let mut len_buf = [0; 8];
     conn.read_exact(&mut len_buf).await?;
     let len = u64::from_le_bytes(len_buf) as usize;
@@ -30,10 +38,15 @@ pub async fn read_full_packet(conn: &mut TcpStream, key: &mut OpeningKey<BasicNo
     Ok(PacketIn::read(&mut packet_buf)?)
 }
 
-pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut, key: &mut SealingKey<BasicNonce>) -> anyhow::Result<()> {
+pub async fn write_full_packet(
+    conn: &mut TcpStream,
+    packet: PacketOut,
+    key: &mut SealingKey<BasicNonce>,
+) -> anyhow::Result<()> {
     let mut buf = BytesMut::new();
     packet.write(&mut buf)?;
-    key.seal_in_place_append_tag(Aad::empty(), &mut buf).unwrap();
+    key.seal_in_place_append_tag(Aad::empty(), &mut buf)
+        .unwrap();
     let mut final_buf = BytesMut::new();
     (buf.len() as u64).write(&mut final_buf)?;
     final_buf.extend(buf);
@@ -45,11 +58,21 @@ pub async fn write_full_packet(conn: &mut TcpStream, packet: PacketOut, key: &mu
 #[derive(Ordinal)]
 #[repr(u8)]
 pub enum PacketIn {
-    Login { version: u16, token: Token, key: [u8; 32], } = 0x0,
-    ChallengeResponse { val: Vec<u8>, } = 0x1,
+    Login {
+        version: u16,
+        token: Token,
+        key: [u8; 32],
+    } = 0x0,
+    ChallengeResponse {
+        val: Vec<u8>,
+    } = 0x1,
     KeepAlive = 0x2,
     BackupRequest = 0x3,
-    DeliverFrame { file_name: String, content: Vec<u8>, last_frame: bool, } = 0x4,
+    DeliverFrame {
+        file_name: String,
+        content: Vec<u8>,
+        last_frame: bool,
+    } = 0x4,
     FinishedBackup = 0x5,
 }
 
@@ -70,7 +93,9 @@ impl RWBytes for PacketIn {
                     key
                 },
             }),
-            0x1 => Ok(Self::ChallengeResponse { val: Vec::<u8>::read(src)? }),
+            0x1 => Ok(Self::ChallengeResponse {
+                val: Vec::<u8>::read(src)?,
+            }),
             0x2 => Ok(Self::KeepAlive),
             0x3 => Ok(Self::BackupRequest),
             0x4 => Ok(Self::DeliverFrame {
@@ -86,17 +111,25 @@ impl RWBytes for PacketIn {
     fn write(&self, dst: &mut bytes::BytesMut) -> anyhow::Result<()> {
         dst.put_u8(self.ordinal() as u8);
         match self {
-            Self::Login { version, token, key } => {
+            Self::Login {
+                version,
+                token,
+                key,
+            } => {
                 version.write(dst)?;
                 token.write(dst)?;
                 for i in 0..key.len() {
                     key[i].write(dst)?;
                 }
                 Ok(())
-            },
+            }
             Self::BackupRequest => Ok(()),
             Self::FinishedBackup => Ok(()),
-            Self::DeliverFrame { file_name, content, last_frame } => {
+            Self::DeliverFrame {
+                file_name,
+                content,
+                last_frame,
+            } => {
                 file_name.write(dst)?;
                 content.write(dst)?;
                 last_frame.write(dst)
@@ -110,8 +143,12 @@ impl RWBytes for PacketIn {
 #[derive(Ordinal)]
 #[repr(u8)]
 pub enum PacketOut {
-    ChallengeRequest { challenge: Vec<u8> } = 0x0,
-    LoginSuccess { max_frame_size: u64, } = 0x1,
+    ChallengeRequest {
+        challenge: Vec<u8>,
+    } = 0x0,
+    LoginSuccess {
+        max_frame_size: u64,
+    } = 0x1,
     KeepAlive = 0x2,
     /// requests the next frame from the client
     FrameRequest = 0x3,
@@ -126,7 +163,9 @@ impl RWBytes for PacketOut {
             0x0 => Ok(Self::ChallengeRequest {
                 challenge: Vec::<u8>::read(src)?,
             }),
-            0x1 => Ok(Self::LoginSuccess { max_frame_size: u64::read(src)?, }),
+            0x1 => Ok(Self::LoginSuccess {
+                max_frame_size: u64::read(src)?,
+            }),
             0x2 => Ok(Self::KeepAlive),
             0x3 => Ok(Self::FrameRequest),
             _ => unreachable!("Unknown packet ordinal {ord}"),
@@ -140,7 +179,7 @@ impl RWBytes for PacketOut {
             PacketOut::LoginSuccess { max_frame_size } => max_frame_size.write(dst),
             PacketOut::ChallengeRequest { challenge } => challenge.write(dst),
             PacketOut::FrameRequest => Ok(()),
-            PacketOut::KeepAlive => Ok(()),            
+            PacketOut::KeepAlive => Ok(()),
         }
     }
 }

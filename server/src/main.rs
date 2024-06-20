@@ -1,22 +1,30 @@
 #![feature(duration_constructors)]
 
 use std::{
-    fs, io::Read, path::Path, sync::{
+    fs,
+    path::Path,
+    sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    }, thread, time::Duration
+    },
+    thread,
+    time::Duration,
 };
 
 use clitty::{
     core::{
-        CmdParamEnumConstraints, CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam, CommandParamTy, EnumVal, UsageBuilder
+        CmdParamEnumConstraints, CmdParamStrConstraints, CommandBuilder, CommandImpl, CommandParam,
+        CommandParamTy, EnumVal, UsageBuilder,
     },
     ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
 use config::{Config, EncryptionKey, MetaCfg, RegisterCfg};
 use network::NetworkServer;
-use rand::{thread_rng, Rng};
-use rsa::{pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey}, RsaPrivateKey, RsaPublicKey};
+use rand::Rng;
+use rsa::{
+    pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey},
+    RsaPrivateKey,
+};
 use swap_it::SwapIt;
 use utils::clear_dir;
 
@@ -39,53 +47,53 @@ async fn main() {
             CommandBuilder::new("tokens", CmdTokens).params(
                 UsageBuilder::new().required(CommandParam {
                     name: "action",
-                    ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(
-                        vec![
-                            (
-                                "register",
-                                EnumVal::None,
+                    ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(vec![
+                        ("register", EnumVal::None),
+                        (
+                            "unregister",
+                            EnumVal::Complex(
+                                UsageBuilder::new()
+                                    .required(CommandParam {
+                                        name: "token",
+                                        ty: CommandParamTy::String(CmdParamStrConstraints::None),
+                                    })
+                                    .optional(CommandParam {
+                                        name: "delete",
+                                        ty: CommandParamTy::Enum(CmdParamEnumConstraints::Exact(
+                                            vec![("true", EnumVal::None), ("false", EnumVal::None)],
+                                        )),
+                                    }),
                             ),
-                            (
-                                "unregister",
-                                EnumVal::Complex(
-                                    UsageBuilder::new()
-                                        .required(CommandParam {
-                                            name: "token",
-                                            ty: CommandParamTy::String(
-                                                CmdParamStrConstraints::None,
-                                            ),
-                                        })
-                                        .optional(CommandParam {
-                                            name: "delete",
-                                            ty: CommandParamTy::Enum(CmdParamEnumConstraints::Exact(vec![("true", EnumVal::None), ("false", EnumVal::None)])),
-                                        }),
-                                ),
-                            ),
-                            (
-                                "list",
-                                EnumVal::None,
-                            )
-                        ],
-                    )),
+                        ),
+                        ("list", EnumVal::None),
+                    ])),
                 }),
             ),
         )
         .command(CommandBuilder::new("help", CmdHelp))
         .command(CommandBuilder::new("connections", CmdConnections))
-        .fallback(Box::new(PrintFallback::new("This command doesn't exist".to_string())))
+        .fallback(Box::new(PrintFallback::new(
+            "This command doesn't exist".to_string(),
+        )))
         .build();
     let cli = Arc::new(CmdLineInterface::new(window));
-    let server = Arc::new(Server {running:AtomicBool::new(true),network:NetworkServer::new(cfg.port).await,cfg:SwapIt::new(cfg),cli:cli.clone(), key: EncryptionKey::load() });
+    let server = Arc::new(Server {
+        running: AtomicBool::new(true),
+        network: NetworkServer::new(cfg.port).await,
+        cfg: SwapIt::new(cfg),
+        cli: cli.clone(),
+        key: EncryptionKey::load(),
+    });
     server.network.listen_login(server.clone()).await;
     let srv = server.clone();
     thread::spawn(move || {
         let cli = cli;
         loop {
             match cli.await_input(&srv) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(err) => {
                     cli.println(&format!("An CLI error occoured: {err}"));
-                },
+                }
             }
         }
     });
@@ -117,7 +125,8 @@ impl Server {
             if !self.is_trusted(&token) {
                 let mut rng = rand::thread_rng();
                 let bits = 4096;
-                let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+                let priv_key =
+                    RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
                 return (token, priv_key);
             }
         }
@@ -172,7 +181,22 @@ impl CommandImpl for CmdTokens {
 
                 ctx.println(&format!("Created token {} successfully", &token_str));
                 ctx.println("The token information, needed by the client was written into a file at ./nas/tmp/credentials.json");
-                fs::write("./nas/tmp/credentials.json", serde_json::to_string(&RegisterCfg { priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(), token, server_pub_key: ctx.key.key.to_public_key().to_pkcs1_der().unwrap().into_vec() }).unwrap()).unwrap();
+                fs::write(
+                    "./nas/tmp/credentials.json",
+                    serde_json::to_string(&RegisterCfg {
+                        priv_key: priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(),
+                        token,
+                        server_pub_key: ctx
+                            .key
+                            .key
+                            .to_public_key()
+                            .to_pkcs1_der()
+                            .unwrap()
+                            .into_vec(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
                 Ok(())
             }
             "unregister" => {

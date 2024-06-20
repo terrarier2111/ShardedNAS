@@ -1,21 +1,33 @@
 #![feature(duration_constructors)]
 
-use std::{collections::HashMap, fs::{self, File, OpenOptions}, hint, io::{Read, Write}, ops::Deref, path::Path, sync::{atomic::{AtomicBool, Ordering}, Arc}, thread, time::Duration};
+use std::{
+    collections::HashMap, fs::{self, File, OpenOptions}, hint, io::Read, path::Path, sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    }, thread, time::Duration
+};
 
-use clitty::{core::{CommandBuilder, CommandImpl}, ui::{CLIBuilder, CmdLineInterface, PrintFallback}};
+use clitty::{
+    core::{CommandBuilder, CommandImpl},
+    ui::{CLIBuilder, CmdLineInterface, PrintFallback},
+};
 use config::{Config, Meta, RegisterCfg};
 use network::NetworkClient;
 use packet::PacketIn;
 use protocol::PROTOCOL_VERSION;
-use rsa::{pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey}, sha2::{digest::core_api::VariableOutputCore, Digest, Sha256, Sha512VarCore}, Pss, RsaPrivateKey, RsaPublicKey};
+use rsa::{
+    pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
+    sha2::{Digest, Sha256},
+    Pss, RsaPrivateKey, RsaPublicKey,
+};
 use swap_it::SwapIt;
 use utils::current_time_millis;
 
+mod config;
+mod network;
 mod packet;
 mod protocol;
 mod utils;
-mod config;
-mod network;
 
 pub type Token = Vec<u8>;
 
@@ -23,7 +35,9 @@ fn main() {
     let window = CLIBuilder::new()
         .prompt("SharedNAS: ".to_string())
         .command(CommandBuilder::new("help", CmdHelp))
-        .fallback(Box::new(PrintFallback::new("This command doesn't exist".to_string())))
+        .fallback(Box::new(PrintFallback::new(
+            "This command doesn't exist".to_string(),
+        )))
         .build();
     let cli = Arc::new(CmdLineInterface::new(window));
     let dir_path = "./nas/";
@@ -33,20 +47,33 @@ fn main() {
         thread::sleep(Duration::from_secs(10));
         return;
     }
-    let creds: RegisterCfg = serde_json::from_str(&fs::read_to_string("./nas/credentials.json").unwrap()).unwrap();
+    let creds: RegisterCfg =
+        serde_json::from_str(&fs::read_to_string("./nas/credentials.json").unwrap()).unwrap();
     let cfg = Arc::new(SwapIt::new(Config::load()));
     // FIXME: we only need a network client if the last backup is too old
     let conn = 'outer: loop {
         match NetworkClient::new(cfg.clone()) {
             Ok((conn, key)) => {
-                conn.write_packet_rsa(packet::PacketOut::Login { version: PROTOCOL_VERSION, token: creds.token.clone(), key }, &RsaPublicKey::from_pkcs1_der(&creds.server_pub_key).unwrap()).unwrap();
+                conn.write_packet_rsa(
+                    packet::PacketOut::Login {
+                        version: PROTOCOL_VERSION,
+                        token: creds.token.clone(),
+                        key,
+                    },
+                    &RsaPublicKey::from_pkcs1_der(&creds.server_pub_key).unwrap(),
+                )
+                .unwrap();
                 let packet = conn.read_packet();
                 if let PacketIn::ChallengeRequest { challenge } = packet.unwrap() {
                     let mut hasher = Sha256::new();
                     hasher.update(&challenge);
                     let hashed = hasher.finalize();
-                    let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key).expect("Invalid private key").sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha256>(), &hashed).unwrap();
-                    conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed }).unwrap();
+                    let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key)
+                        .expect("Invalid private key")
+                        .sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha256>(), &hashed)
+                        .unwrap();
+                    conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed })
+                        .unwrap();
                     if let Ok(PacketIn::LoginSuccess { max_frame_size }) = conn.read_packet() {
                         conn.max_frame_size.store(max_frame_size, Ordering::Release);
                         cli.println("Successfully logged in");
@@ -59,11 +86,11 @@ fn main() {
                     continue;
                 }
                 break 'outer conn;
-            },
+            }
             Err(_) => {
                 println!("Connecting failed, retrying in 10 seconds.");
                 thread::sleep(Duration::from_secs(10));
-            },
+            }
         }
     };
     let meta = Meta::load();
@@ -76,13 +103,11 @@ fn main() {
     });
     let t_cli = client.cli.clone();
     let t_client = client.clone();
-    thread::spawn(move || {
-        loop {
-            match t_cli.await_input(&t_client) {
-                Ok(_) => {},
-                Err(_) => {
-                    t_cli.println("Failed to await input");
-                },
+    thread::spawn(move || loop {
+        match t_cli.await_input(&t_client) {
+            Ok(_) => {}
+            Err(_) => {
+                t_cli.println("Failed to await input");
             }
         }
     });
@@ -95,11 +120,14 @@ fn main() {
                 PacketIn::ChallengeRequest { .. } => unreachable!(),
                 PacketIn::LoginSuccess { .. } => unreachable!(),
                 PacketIn::KeepAlive => {
-                    client.conn.last_keep_alive.store(current_time_millis() as u64, Ordering::Release);
-                },
+                    client
+                        .conn
+                        .last_keep_alive
+                        .store(current_time_millis() as u64, Ordering::Release);
+                }
                 PacketIn::FrameRequest => {
                     client.conn.acknowledged.store(true, Ordering::Release);
-                },
+                }
             }
         }
     });
@@ -109,7 +137,9 @@ fn main() {
         loop {
             let dist = current_time_millis() - client.meta.load().last_update;
             if dist < Duration::from_days(1).as_millis() {
-                thread::sleep(Duration::from_millis((Duration::from_days(1).as_millis() - dist) as u64));
+                thread::sleep(Duration::from_millis(
+                    (Duration::from_days(1).as_millis() - dist) as u64,
+                ));
             }
             client.println("Trying to initiate update...");
             let backup_start = current_time_millis();
@@ -126,14 +156,17 @@ fn main() {
                 fingerprints.insert(path.to_string(), hash);
                 if meta.fingerprints.get(path).cloned() != Some(hash) {
                     if !got_clearance {
-                        client.conn.write_packet(packet::PacketOut::BackupRequest).unwrap();
+                        client
+                            .conn
+                            .write_packet(packet::PacketOut::BackupRequest)
+                            .unwrap();
                         client.await_acknowledgement();
                         got_clearance = true;
                     }
                     client.send_by_path(path);
                 }
             }
-            
+
             let new_cfg = Meta {
                 fingerprints,
                 last_update: backup_start,
@@ -189,7 +222,6 @@ pub struct Client {
 }
 
 impl Client {
-
     pub fn println(&self, line: &str) {
         self.cli.println(line);
     }
@@ -208,7 +240,7 @@ impl Client {
                     self.send_by_path(file.path());
                 } else {
                     // FIXME: how do we handle errors?
-                    continue; 
+                    continue;
                 }
             }
         } else if path.is_file() {
@@ -223,14 +255,26 @@ impl Client {
                     file.read_exact(&mut content).unwrap();
                     let last_frame = i == frames - 1;
                     println!("delivered large frame");
-                    self.conn.write_packet(packet::PacketOut::DeliverFrame { file_name: path.to_str().unwrap().to_string(), content, last_frame }).unwrap();
+                    self.conn
+                        .write_packet(packet::PacketOut::DeliverFrame {
+                            file_name: path.to_str().unwrap().to_string(),
+                            content,
+                            last_frame,
+                        })
+                        .unwrap();
                     self.await_acknowledgement();
                     // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
                 }
             } else {
                 let content = fs::read(path).unwrap();
                 println!("delivered small frame");
-                self.conn.write_packet(packet::PacketOut::DeliverFrame { file_name: path.to_str().unwrap().to_string(), content, last_frame: true }).unwrap();
+                self.conn
+                    .write_packet(packet::PacketOut::DeliverFrame {
+                        file_name: path.to_str().unwrap().to_string(),
+                        content,
+                        last_frame: true,
+                    })
+                    .unwrap();
                 self.await_acknowledgement();
                 // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
             }
@@ -252,7 +296,6 @@ impl Client {
         }
         self.conn.acknowledged.store(false, Ordering::Release);
     }
-
 }
 
 struct CmdHelp;

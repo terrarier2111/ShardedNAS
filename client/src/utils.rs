@@ -1,4 +1,7 @@
-use std::{mem::size_of, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    mem::size_of,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ring::aead::{Nonce, NonceSequence, NONCE_LEN};
 
@@ -14,14 +17,10 @@ pub struct BasicNonce {
 }
 
 impl BasicNonce {
-
     #[inline(always)]
     pub const fn new() -> Self {
-        Self {
-            cnt: 2,
-        }
+        Self { cnt: 2 }
     }
-
 }
 
 impl NonceSequence for BasicNonce {
@@ -37,4 +36,3 @@ impl NonceSequence for BasicNonce {
         Ok(Nonce::assume_unique_for_key(val))
     }
 }
-
