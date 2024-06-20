@@ -17,7 +17,7 @@ use packet::PacketIn;
 use protocol::PROTOCOL_VERSION;
 use rsa::{
     pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
-    sha2::{Digest, Sha256},
+    sha2::{Digest, Sha512_256},
     Pss, RsaPrivateKey, RsaPublicKey,
 };
 use swap_it::SwapIt;
@@ -65,12 +65,12 @@ fn main() {
                 .unwrap();
                 let packet = conn.read_packet();
                 if let PacketIn::ChallengeRequest { challenge } = packet.unwrap() {
-                    let mut hasher = Sha256::new();
+                    let mut hasher = Sha512_256::new();
                     hasher.update(&challenge);
                     let hashed = hasher.finalize();
                     let signed = RsaPrivateKey::from_pkcs1_der(&creds.priv_key)
                         .expect("Invalid private key")
-                        .sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha256>(), &hashed)
+                        .sign_with_rng(&mut rand::thread_rng(), Pss::new::<Sha512_256>(), &hashed)
                         .unwrap();
                     conn.write_packet(packet::PacketOut::ChallengeResponse { val: signed })
                         .unwrap();

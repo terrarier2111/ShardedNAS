@@ -15,7 +15,7 @@ use rand::RngCore;
 use ring::aead::{BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM};
 use rsa::{
     pkcs1::DecodeRsaPublicKey,
-    sha2::{Digest, Sha256},
+    sha2::{Digest, Sha512_256},
     Pss, RsaPublicKey,
 };
 use swap_it::SwapIt;
@@ -243,7 +243,6 @@ impl PendingConn {
             .set_nodelay(true)
             .expect("Failure setting no_delay");
         tokio::spawn(async move {
-            println!("listen on conn");
             let login = match tokio::time::timeout(
                 Duration::from_millis(self.server.cfg.load().connect_timeout_ms),
                 read_full_packet_rsa(&mut self.conn, &self.server.key.key),
@@ -260,7 +259,6 @@ impl PendingConn {
                 key,
             } = login
             {
-                println!("got login");
                 if version != PROTOCOL_VERSION {
                     self.server.println(&format!(
                         "A client tried to connect with an incompatible version ({})",
@@ -326,10 +324,10 @@ impl PendingConn {
 
                 if let PacketIn::ChallengeResponse { val } = packet {
                     let pub_key = RsaPublicKey::from_pkcs1_der(&cfg.pub_key).unwrap();
-                    let mut hasher = Sha256::new();
+                    let mut hasher = Sha512_256::new();
                     hasher.update(&challenge);
                     let hash = hasher.finalize();
-                    if pub_key.verify(Pss::new::<Sha256>(), &hash, &val).is_err() {
+                    if pub_key.verify(Pss::new::<Sha512_256>(), &hash, &val).is_err() {
                         self.server.println("Failed challenge during login");
                         // FIXME: block ip as it tried to immitate the token holder
                         return;
