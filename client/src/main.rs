@@ -72,43 +72,28 @@ fn main() {
             client.println("Trying to initiate update...");
             let backup_start = current_time_millis();
             let meta = client.meta.load();
-            let mut net_client = None;
+            let mut net_client = MaybeNetClient::new(&creds, &client);
             let mut fingerprints = HashMap::new();
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
                     client.println(&format!("[Warn] Can't read \"{}\"", path));
-                    if net_client.is_none() {
-                        let new_client = connect(&creds, &client).unwrap();
-                        new_client
-                            .write_packet(packet::PacketOut::BackupRequest)
-                            .unwrap();
-                        new_client.await_acknowledgement();
-                        net_client = Some(new_client);
-                    }
-                    net_client.as_ref().unwrap().write_packet(packet::PacketOut::DeliverFrame { file_name: path.clone(), content: None, remaining_bytes: 0 }).unwrap();
-                    net_client.as_ref().unwrap().await_acknowledgement();
+                    let net_client = net_client.load().unwrap();
+                    net_client.write_packet(packet::PacketOut::DeliverFrame { file_name: path.clone(), content: None, remaining_bytes: 0 }).unwrap();
+                    net_client.await_acknowledgement();
                     continue;
                 }
-                send_by_path(&mut net_client, path, &meta.fingerprints, &mut fingerprints, &creds, &client);
+                send_by_path(&mut net_client, path, &meta.fingerprints, &mut fingerprints);
             }
 
             for entry in meta.fingerprints.keys() {
                 if fingerprints.get(entry).is_none() {
-                    // connect to server if no client exists yet
-                    if net_client.is_none() {
-                        let new_client = connect(&creds, &client).unwrap();
-                        new_client
-                            .write_packet(packet::PacketOut::BackupRequest)
-                            .unwrap();
-                        new_client.await_acknowledgement();
-                        net_client = Some(new_client);
-                    }
-                    net_client.as_ref().unwrap().write_packet(packet::PacketOut::DeliverFrame { file_name: entry.clone(), content: None, remaining_bytes: 0 }).unwrap();
-                    net_client.as_ref().unwrap().await_acknowledgement();
+                    let net_client = net_client.load().unwrap();
+                    net_client.write_packet(packet::PacketOut::DeliverFrame { file_name: entry.clone(), content: None, remaining_bytes: 0 }).unwrap();
+                    net_client.await_acknowledgement();
                 }
             }
 
-            if let Some(net_client) = net_client {
+            if let Some(net_client) = net_client.try_load() {
                 let _ = net_client.write_packet(packet::PacketOut::FinishedBackup);
                 let _ = net_client.shutdown();
             }
@@ -127,8 +112,6 @@ fn main() {
     }
 }
 
-// FIXME: don't calculate fingerprints of directories, just store the fingerprints of the files contained inside them
-// FIXME: to detect deleted files/not needlessly sending over the rest of the directory if only a single file inside it changes
 fn calculate_fingerprint<P: AsRef<Path>>(path: P) -> u64 {
     if path.as_ref().is_file() {
         const CHUNK_SIZE: usize = 1024 * 4 * 512;
@@ -182,12 +165,12 @@ impl CommandImpl for CmdHelp {
     }
 }
 
-fn send_by_path(conn: &mut Option<Arc<NetworkClient>>, src_path: &str, old_hashes: &HashMap<String, u64>, new_hashes: &mut HashMap<String, u64>, creds: &RegisterCfg, client: &Client) {
+fn send_by_path(conn: &mut MaybeNetClient, src_path: &str, old_hashes: &HashMap<String, u64>, new_hashes: &mut HashMap<String, u64>) {
     let path = Path::new(src_path);
     if path.is_dir() {
         for file in fs::read_dir(path).unwrap() {
             if let Ok(file) = file {
-                send_by_path(conn, file.path().to_str().unwrap(), old_hashes, new_hashes, creds, client);
+                send_by_path(conn, file.path().to_str().unwrap(), old_hashes, new_hashes);
             } else {
                 // FIXME: how do we handle errors?
                 continue;
@@ -200,15 +183,7 @@ fn send_by_path(conn: &mut Option<Arc<NetworkClient>>, src_path: &str, old_hashe
             // no change
             return;
         }
-        if conn.is_none() {
-            let new_client = connect(creds, client).unwrap();
-            new_client
-                .write_packet(packet::PacketOut::BackupRequest)
-                .unwrap();
-            new_client.await_acknowledgement();
-            *conn = Some(new_client);
-        }
-        let conn = conn.as_ref().unwrap();
+        let conn = conn.load().unwrap();
         println!("sending {:?}", path);
         let threshold = conn.max_frame_size.load(Ordering::Acquire);
         let initial_size = path.metadata().unwrap().len();
@@ -244,4 +219,36 @@ fn send_by_path(conn: &mut Option<Arc<NetworkClient>>, src_path: &str, old_hashe
             // FIXME: write a backup log so interrupted backups can be completed later on (but use the start time as the completion time to be stored in metadata)
         }
     }
+}
+
+struct MaybeNetClient<'a> {
+    net_client: Option<Arc<NetworkClient>>,
+    credentials: &'a RegisterCfg,
+    client: &'a Client,
+}
+
+impl<'a> MaybeNetClient<'a> {
+
+    fn new(credentials: &'a RegisterCfg, client: &'a Client) -> Self {
+        Self {
+            net_client: None,
+            credentials,
+            client,
+        }
+    }
+
+    fn load(&mut self) -> anyhow::Result<&Arc<NetworkClient>> {
+        let new_client = connect(self.credentials, self.client).unwrap();
+        new_client
+                .write_packet(packet::PacketOut::BackupRequest)
+                .unwrap();
+        new_client.await_acknowledgement();
+        self.net_client = Some(new_client);
+        Ok(&self.net_client.as_ref().unwrap())
+    }
+    
+    fn try_load(&self) -> Option<&Arc<NetworkClient>> {
+        self.net_client.as_ref()
+    }
+
 }
