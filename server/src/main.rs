@@ -48,7 +48,7 @@ async fn main() {
                 UsageBuilder::new().required(CommandParam {
                     name: "action",
                     ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(vec![
-                        ("register", EnumVal::None),
+                        ("register", EnumVal::Simple(CommandParamTy::String(CmdParamStrConstraints::None))),
                         (
                             "unregister",
                             EnumVal::Complex(
@@ -158,6 +158,7 @@ impl CommandImpl for CmdTokens {
     fn execute(&self, ctx: &Self::CTX, input: &[&str]) -> anyhow::Result<()> {
         match input[0] {
             "register" => {
+                let name = input[1].to_string();
                 let (token, priv_key) = ctx.gen_token();
                 let token_str = binary_to_hash(&token);
                 if !Path::new(&format!("./nas/instances/{}/storage", &token_str)).exists() {
@@ -168,6 +169,7 @@ impl CommandImpl for CmdTokens {
                         serde_json::to_string(&MetaCfg {
                             last_updates: vec![],
                             pub_key: priv_key.to_public_key().to_pkcs1_der().unwrap().into_vec(),
+                            name,
                         })
                         .unwrap()
                         .as_bytes(),

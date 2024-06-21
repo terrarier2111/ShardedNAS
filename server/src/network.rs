@@ -65,15 +65,13 @@ impl NetworkServer {
                         .await;
                     }
                     Err(err) => {
-                        server.println(&format!("error listening for connections {err}"));
+                        server.println(&format!("Error listening for connections {err}"));
                     }
                 }
             }
         });
     }
 }
-
-const IDLE_TRANSMISSION: usize = usize::MAX;
 
 pub struct Connection {
     pub id: Token,
@@ -108,12 +106,12 @@ impl Connection {
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
                     PacketIn::BackupRequest => {
-                        // FIXME: determine whether we are currently under load and wait until there is less load
+                        // FIXME: determine whether we are currently under load and wait until there is less 
 
                         // request first frame,
                         // ignore errors for now
                         let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
-                        server.println(&format!("Client {} started backup...", hash));
+                        server.println(&format!("Client \"{}\" started backup...", self.cfg.load().name));
                     }
                     PacketIn::DeliverFrame {
                         file_name,
@@ -201,7 +199,7 @@ impl Connection {
                             serde_json::to_string(&cfg).unwrap().as_bytes(),
                         )
                         .unwrap();
-                        server.println(&format!("Client {} finished backup", hash));
+                        server.println(&format!("Client \"{}\" finished backup", cfg.name));
                         // there's nothing to do anymore, so cut the connection
                         let _ = self.shutdown(&server).await;
                     }
@@ -219,7 +217,7 @@ impl Connection {
         {
             return Ok(false);
         }
-        server.println(&format!("Client {} disconnected", binary_to_hash(&self.id)));
+        server.println(&format!("Client \"{}\" disconnected", self.cfg.load().name));
         self.conn.lock().await.shutdown().await?;
         Ok(true)
     }
@@ -295,7 +293,7 @@ impl PendingConn {
                             Err(_) => {
                                 self.server.println(&format!(
                                     "Unreadable metadata for token {}",
-                                    binary_to_hash(&token)
+                                    token_str
                                 ));
                                 return;
                             }
@@ -363,8 +361,8 @@ impl PendingConn {
                 .await
                 {
                     self.server.println(&format!(
-                        "The client {} immediately disconnected",
-                        binary_to_hash(&token)
+                        "The client \"{}\" immediately disconnected",
+                        cfg.name
                     ));
                     return;
                 }
@@ -381,9 +379,9 @@ impl PendingConn {
                 conn.clone()
                     .handle_packets(self.server.clone(), decrypt_key)
                     .await;
-                self.server.network.clients.lock().await.push(conn);
+                self.server.network.clients.lock().await.push(conn.clone());
                 self.server
-                    .println(&format!("Client {} connected", token_str));
+                    .println(&format!("Client \"{}\" connected", conn.cfg.load().name));
             } else {
                 self.server
                     .println("Unexpected packet received during login");

@@ -74,6 +74,7 @@ impl EncryptionKey {
 pub struct MetaCfg {
     pub last_updates: Vec<u128>,
     pub pub_key: Vec<u8>,
+    pub name: String,
 }
 
 pub struct RegisterCfg {

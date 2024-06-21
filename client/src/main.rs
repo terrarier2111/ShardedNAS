@@ -193,7 +193,7 @@ fn send_by_path(conn: &mut MaybeNetClient, src_path: &str, old_hashes: &HashMap<
             let mut file = OpenOptions::new().read(true).open(path).unwrap();
             for i in 0..frames {
                 let mut content = vec![0; threshold as usize];
-                file.read_exact(&mut content).unwrap();
+                file.read(&mut content).unwrap();
                 println!("delivered large frame");
                 conn
                     .write_packet(packet::PacketOut::DeliverFrame {
