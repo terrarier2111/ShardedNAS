@@ -44,11 +44,17 @@ async fn main() {
     let window = CLIBuilder::new()
         .prompt("SharedNAS: ".to_string())
         .command(
-            CommandBuilder::new("tokens", CmdTokens).params(
-                UsageBuilder::new().required(CommandParam {
+            CommandBuilder::new("tokens", CmdTokens).params(UsageBuilder::new().required(
+                CommandParam {
                     name: "action",
                     ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(vec![
-                        ("register", EnumVal::Simple(CommandParamTy::String(CmdParamStrConstraints::None))),
+                        (
+                            "register",
+                            EnumVal::Complex(UsageBuilder::new().optional(CommandParam {
+                                name: "name",
+                                ty: CommandParamTy::String(CmdParamStrConstraints::None),
+                            })),
+                        ),
                         (
                             "unregister",
                             EnumVal::Complex(
@@ -67,8 +73,8 @@ async fn main() {
                         ),
                         ("list", EnumVal::None),
                     ])),
-                }),
-            ),
+                },
+            )),
         )
         .command(CommandBuilder::new("help", CmdHelp))
         .command(CommandBuilder::new("connections", CmdConnections))
@@ -158,7 +164,7 @@ impl CommandImpl for CmdTokens {
     fn execute(&self, ctx: &Self::CTX, input: &[&str]) -> anyhow::Result<()> {
         match input[0] {
             "register" => {
-                let name = input[1].to_string();
+                let name = input.get(1).map(|name| name.to_string());
                 let (token, priv_key) = ctx.gen_token();
                 let token_str = binary_to_hash(&token);
                 if !Path::new(&format!("./nas/instances/{}/storage", &token_str)).exists() {
@@ -193,7 +199,9 @@ impl CommandImpl for CmdTokens {
                         .to_pkcs1_der()
                         .unwrap()
                         .into_vec(),
-                }.store("./nas/tmp/credentials.key").unwrap();
+                }
+                .store("./nas/tmp/credentials.key")
+                .unwrap();
                 Ok(())
             }
             "unregister" => {

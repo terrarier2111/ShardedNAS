@@ -74,7 +74,7 @@ impl EncryptionKey {
 pub struct MetaCfg {
     pub last_updates: Vec<u128>,
     pub pub_key: Vec<u8>,
-    pub name: String,
+    pub name: Option<String>,
 }
 
 pub struct RegisterCfg {
@@ -84,7 +84,6 @@ pub struct RegisterCfg {
 }
 
 impl RegisterCfg {
-
     pub fn store<P: AsRef<Path>>(self, path: P) -> anyhow::Result<()> {
         let mut buf = BytesMut::new();
         self.priv_key.write(&mut buf)?;
@@ -93,5 +92,4 @@ impl RegisterCfg {
         fs::write(path, &buf)?;
         Ok(())
     }
-
 }

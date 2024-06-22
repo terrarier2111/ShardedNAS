@@ -106,12 +106,15 @@ impl Connection {
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
                     PacketIn::BackupRequest => {
-                        // FIXME: determine whether we are currently under load and wait until there is less 
+                        // FIXME: determine whether we are currently under load and wait until there is less
 
                         // request first frame,
                         // ignore errors for now
                         let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
-                        server.println(&format!("Client \"{}\" started backup...", self.cfg.load().name));
+                        server.println(&format!(
+                            "Client \"{}\" started backup...",
+                            self.cfg.load().name.as_ref().unwrap_or(&hash)
+                        ));
                     }
                     PacketIn::DeliverFrame {
                         file_name,
@@ -170,10 +173,14 @@ impl Connection {
                                     // clean up tmp file
                                     fs::remove_file(&tmp_path).unwrap();
                                 }
-                            },
+                            }
                             None => {
-                                remove_path(&format!("./nas/instances/{}/storage/{}", &hash, file_name)).unwrap();
-                            },
+                                remove_path(&format!(
+                                    "./nas/instances/{}/storage/{}",
+                                    &hash, file_name
+                                ))
+                                .unwrap();
+                            }
                         }
 
                         // ignore errors for now
@@ -199,7 +206,10 @@ impl Connection {
                             serde_json::to_string(&cfg).unwrap().as_bytes(),
                         )
                         .unwrap();
-                        server.println(&format!("Client \"{}\" finished backup", cfg.name));
+                        server.println(&format!(
+                            "Client \"{}\" finished backup",
+                            cfg.name.as_ref().unwrap_or(&hash)
+                        ));
                         // there's nothing to do anymore, so cut the connection
                         let _ = self.shutdown(&server).await;
                     }
@@ -217,7 +227,14 @@ impl Connection {
         {
             return Ok(false);
         }
-        server.println(&format!("Client \"{}\" disconnected", self.cfg.load().name));
+        if let Some(name) = self.cfg.load().name.as_ref() {
+            server.println(&format!("Client \"{}\" disconnected", name));
+        } else {
+            server.println(&format!(
+                "Client \"{}\" disconnected",
+                binary_to_hash(&self.id)
+            ));
+        }
         self.conn.lock().await.shutdown().await?;
         Ok(true)
     }
@@ -340,7 +357,10 @@ impl PendingConn {
                     let mut hasher = Sha512_256::new();
                     hasher.update(&challenge);
                     let hash = hasher.finalize();
-                    if pub_key.verify(Pss::new::<Sha512_256>(), &hash, &val).is_err() {
+                    if pub_key
+                        .verify(Pss::new::<Sha512_256>(), &hash, &val)
+                        .is_err()
+                    {
                         self.server.println("Failed challenge during login");
                         // FIXME: block ip as it tried to immitate the token holder
                         return;
@@ -362,7 +382,7 @@ impl PendingConn {
                 {
                     self.server.println(&format!(
                         "The client \"{}\" immediately disconnected",
-                        cfg.name
+                        cfg.name.as_ref().unwrap_or(&token_str)
                     ));
                     return;
                 }
@@ -380,8 +400,10 @@ impl PendingConn {
                     .handle_packets(self.server.clone(), decrypt_key)
                     .await;
                 self.server.network.clients.lock().await.push(conn.clone());
-                self.server
-                    .println(&format!("Client \"{}\" connected", conn.cfg.load().name));
+                self.server.println(&format!(
+                    "Client \"{}\" connected",
+                    conn.cfg.load().name.as_ref().unwrap_or(&token_str)
+                ));
             } else {
                 self.server
                     .println("Unexpected packet received during login");

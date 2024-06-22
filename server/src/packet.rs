@@ -100,7 +100,7 @@ impl RWBytes for PacketIn {
             0x3 => Ok(Self::BackupRequest),
             0x4 => Ok(Self::DeliverFrame {
                 file_name: String::read(src)?,
-                content: Option::<Vec::<u8>>::read(src)?,
+                content: Option::<Vec<u8>>::read(src)?,
                 remaining_bytes: u64::read(src)?,
             }),
             0x5 => Ok(Self::FinishedBackup),
