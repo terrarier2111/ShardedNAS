@@ -78,33 +78,8 @@ impl Storage {
 
 }
 
-/// create new release on Github
-/// return release_id
-pub async fn create_new_release(
-    token: String,
-    owner: &str,
-    repo: &str,
-    version: &str,
-    name: &str,
-    body_md_text: &str,
-) -> String {
-    use octocrab::Octocrab;
-    let octocrab = Octocrab::builder().personal_token(token).build().unwrap();
-    let new_release = octocrab
-            .repos(owner, repo)
-            .releases()
-            .create(&format!("v{}", version))
-            .name(name)
-            .body(body_md_text)
-            .draft(false)
-            .prerelease(false)
-            .send()
-            .await.unwrap();
-    new_release.id.to_string()
-}
-
 /// upload asset to github release
-/// release_upload_url example: https://uploads.github.com/repos/owner/repo/releases/48127727/assets
+/// release_upload_url example: https://uploads.github.com/repos/owner/repo/releases/1234/assets
 pub async fn upload_asset_release(
     client: &Octocrab,
     owner: &str,
@@ -120,7 +95,7 @@ pub async fn upload_asset_release(
     );
     let mut release_upload_url = url::Url::from_str(&release_upload_url).unwrap();
     release_upload_url.set_query(Some(format!("{}={}", "name", asset_name).as_str()));
-    // println!("upload_url: {}", release_upload_url);
+    println!("upload_url: {}", release_upload_url);
     println!(
         "file_size: {}. It can take some time to upload. Wait...",
         data.len()
