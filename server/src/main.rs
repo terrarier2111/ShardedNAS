@@ -33,6 +33,7 @@ mod network;
 mod packet;
 mod protocol;
 mod utils;
+mod storage;
 
 pub type Token = Vec<u8>;
 

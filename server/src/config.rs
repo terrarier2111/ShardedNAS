@@ -12,11 +12,12 @@ use crate::{protocol::RWBytes, Token};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     pub port: u16,
-    pub tokens: HashSet<Token>,
     pub periods: Vec<u128>, // these are stored in milli seconds
     pub connect_timeout_ms: u64,
     pub read_timeout_ms: u64,
     pub max_frame_size_b: u64,
+    pub storage: Storage,
+    pub tokens: HashSet<Token>,
 }
 
 impl Config {
@@ -37,6 +38,7 @@ impl Config {
                     connect_timeout_ms: 15000,
                     read_timeout_ms: 30000,
                     max_frame_size_b: 1024 * 1024 * 64,
+                    storage: Storage { method: StorageMethod::LocalDisk, gen_delta: false },
                 })
                 .unwrap(),
             )
@@ -68,6 +70,21 @@ impl EncryptionKey {
             key: RsaPrivateKey::from_pkcs1_der(&fs::read(Self::PATH).unwrap()).unwrap(),
         }
     }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Storage {
+    pub method: StorageMethod,
+    pub gen_delta: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum StorageMethod {
+    LocalDisk,
+    Github {
+        token: String,
+        name: String,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::Utc;
 use rand::RngCore;
 use ring::aead::{BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM};
 use rsa::{
@@ -105,6 +106,13 @@ impl Connection {
                 };
                 match packet {
                     PacketIn::Login { .. } => unreachable!("unexpected login packet"),
+                    PacketIn::ChallengeResponse { .. } => unreachable!("unexpected login challenge packet"),
+                    PacketIn::KeepAlive => {
+                        self.last_keep_alive
+                            .store(current_time_millis() as u64, Ordering::Release);
+                        // ignore errors for now
+                        let _ = self.write_packet(PacketOut::KeepAlive, &server).await;
+                    }
                     PacketIn::BackupRequest => {
                         // FIXME: determine whether we are currently under load and wait until there is less
 
@@ -136,64 +144,11 @@ impl Connection {
                             };
                             (&file_name[start_cnt..]).to_string()
                         };
-                        if let Some(parent) = Path::new(&file_name).parent() {
-                            fs::create_dir_all(format!(
-                                "./nas/instances/{}/storage/{}",
-                                &hash,
-                                parent.to_str().unwrap()
-                            ))
-                            .unwrap();
-                        }
-                        let tmp_path = format!(
-                            "./nas/tmp/{}_{}",
-                            &hash,
-                            Path::new(&file_name)
-                                .file_name()
-                                .map(|name| name.to_str().unwrap())
-                                .unwrap_or(file_name.as_str())
-                        );
-                        match content {
-                            Some(content) => {
-                                OpenOptions::new()
-                                    .write(true)
-                                    .append(true)
-                                    .create(true)
-                                    .open(&tmp_path)
-                                    .unwrap()
-                                    .write_all(&content)
-                                    .unwrap();
-                                let last_frame = remaining_bytes == 0;
-                                if last_frame {
-                                    // replace original file
-                                    fs::copy(
-                                        &tmp_path,
-                                        &format!("./nas/instances/{}/storage/{}", &hash, file_name),
-                                    )
-                                    .unwrap();
-                                    // clean up tmp file
-                                    fs::remove_file(&tmp_path).unwrap();
-                                }
-                            }
-                            None => {
-                                remove_path(&format!(
-                                    "./nas/instances/{}/storage/{}",
-                                    &hash, file_name
-                                ))
-                                .unwrap();
-                            }
-                        }
+                        // FIXME: support recovery
+                        server.cfg.load().storage.save_file(Utc::now(), &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
 
                         // ignore errors for now
                         let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
-                    }
-                    PacketIn::ChallengeResponse { .. } => {
-                        unreachable!("unexpected login challenge packet")
-                    }
-                    PacketIn::KeepAlive => {
-                        self.last_keep_alive
-                            .store(current_time_millis() as u64, Ordering::Release);
-                        // ignore errors for now
-                        let _ = self.write_packet(PacketOut::KeepAlive, &server).await;
                     }
                     PacketIn::FinishedBackup => {
                         let mut cfg = self.cfg.load().clone();
