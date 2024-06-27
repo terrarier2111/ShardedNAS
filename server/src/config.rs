@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs, path::Path, time::Duration};
+use std::{collections::{HashMap, HashSet}, fs, path::Path, time::Duration};
 
 use bytes::BytesMut;
 use rsa::{
@@ -17,6 +17,7 @@ pub struct Config {
     pub read_timeout_ms: u64,
     pub max_frame_size_b: u64,
     pub storage: Storage,
+    // FIXME: add seperate registry for tokens (and don't modify config)
     pub tokens: HashSet<Token>,
 }
 
@@ -89,9 +90,16 @@ pub enum StorageMethod {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MetaCfg {
-    pub last_updates: Vec<u128>,
+    pub last_finished_update: u64,
+    pub last_started_update: Option<PartialUpdate>,
     pub pub_key: Vec<u8>,
     pub name: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PartialUpdate {
+    pub start: u64,
+    pub finished_files: HashMap<String, u64>,
 }
 
 pub struct RegisterCfg {

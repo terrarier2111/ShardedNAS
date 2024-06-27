@@ -1,17 +1,11 @@
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    ops::DerefMut,
-    path::Path,
-    sync::{
+    collections::HashMap, fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
-    },
-    time::Duration,
+    }, time::Duration
 };
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rand::RngCore;
 use ring::aead::{BoundKey, OpeningKey, SealingKey, UnboundKey, AES_256_GCM};
 use rsa::{
@@ -28,7 +22,7 @@ use tokio::{
 
 use crate::{
     binary_to_hash,
-    config::MetaCfg,
+    config::{MetaCfg, PartialUpdate},
     packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut},
     protocol::PROTOCOL_VERSION,
     utils::{current_time_millis, remove_path, BasicNonce},
@@ -119,13 +113,20 @@ impl Connection {
                         // request first frame,
                         // ignore errors for now
                         let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
+                        let mut meta = self.cfg.load().clone();
                         server.println(&format!(
                             "Client \"{}\" started backup...",
-                            self.cfg.load().name.as_ref().unwrap_or(&hash)
+                            meta.name.as_ref().unwrap_or(&hash)
                         ));
+                        meta.last_started_update = Some(PartialUpdate {
+                            start: current_time_millis() as u64,
+                            finished_files: HashMap::new(),
+                        });
+                        save_meta(&hash, &meta).unwrap();
                     }
                     PacketIn::DeliverFrame {
                         file_name,
+                        file_hash,
                         content,
                         remaining_bytes,
                     } => {
@@ -133,34 +134,40 @@ impl Connection {
                             // FIXME: kill connection, as it attempted to perform bad file actions
                             return;
                         }
+                        let full_name = file_name;
                         let file_name = {
                             let start_cnt = 'outer: {
-                                for i in 0..file_name.len() {
-                                    if file_name.chars().skip(i).next() != Some('/') {
+                                for i in 0..full_name.len() {
+                                    if full_name.chars().skip(i).next() != Some('/') {
                                         break 'outer i;
                                     }
                                 }
-                                file_name.len()
+                                full_name.len()
                             };
-                            (&file_name[start_cnt..]).to_string()
+                            (&full_name[start_cnt..]).to_string()
                         };
-                        // FIXME: support recovery
-                        server.cfg.load().storage.save_file(Utc::now(), &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
+                        let mut meta = self.cfg.load().clone();
+                        let time = if let Some(partial_update) = meta.last_started_update.as_ref() {
+                            if partial_update.finished_files.get(&full_name).cloned() == Some(file_hash) {
+                                // the hashes match up, there is no new info
+                                continue;
+                            }
+                            DateTime::from_timestamp_millis(partial_update.start as i64).unwrap()
+                        } else {
+                            Utc::now()
+                        };
+                        server.cfg.load().storage.save_file(time, &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
+                        meta.last_started_update.as_mut().unwrap().finished_files.insert(full_name, file_hash);
+                        save_meta(&hash, &meta).unwrap();
 
                         // ignore errors for now
                         let _ = self.write_packet(PacketOut::FrameRequest, &server).await;
                     }
                     PacketIn::FinishedBackup => {
                         let mut cfg = self.cfg.load().clone();
-                        if cfg.last_updates.is_empty() {
-                            cfg.last_updates.push(0);
-                        }
-                        cfg.last_updates[0] = current_time_millis();
-                        fs::write(
-                            format!("./nas/instances/{}/meta.json", &hash),
-                            serde_json::to_string(&cfg).unwrap().as_bytes(),
-                        )
-                        .unwrap();
+                        cfg.last_finished_update = cfg.last_started_update.as_ref().unwrap().start;
+                        cfg.last_started_update = None;
+                        save_meta(&hash, &cfg).unwrap();
                         server.println(&format!(
                             "Client \"{}\" finished backup",
                             cfg.name.as_ref().unwrap_or(&hash)
@@ -214,6 +221,14 @@ impl Connection {
             }
         }
     }
+}
+
+fn save_meta(hash: &str, meta: &MetaCfg) -> anyhow::Result<()> {
+    fs::write(
+        format!("./nas/instances/{}/meta.json", hash),
+        serde_json::to_string(meta)?.as_bytes(),
+    )?;
+    Ok(())
 }
 
 struct PendingConn {

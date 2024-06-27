@@ -174,9 +174,10 @@ impl CommandImpl for CmdTokens {
                     fs::write(
                         format!("./nas/instances/{}/meta.json", &token_str),
                         serde_json::to_string(&MetaCfg {
-                            last_updates: vec![],
                             pub_key: priv_key.to_public_key().to_pkcs1_der().unwrap().into_vec(),
                             name,
+                            last_finished_update: 0,
+                            last_started_update: None,
                         })
                         .unwrap()
                         .as_bytes(),

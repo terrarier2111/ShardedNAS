@@ -77,18 +77,15 @@ fn main() {
             for path in client.cfg.load().backup_locations.iter() {
                 if !Path::new(path).exists() {
                     client.println(&format!("[Warn] Can't read \"{}\"", path));
-                    let net_client = net_client.load().unwrap();
-                    net_client.write_packet(packet::PacketOut::DeliverFrame { file_name: path.clone(), content: None, remaining_bytes: 0 }).unwrap();
-                    net_client.await_acknowledgement();
                     continue;
                 }
                 send_by_path(&mut net_client, path, &meta.fingerprints, &mut fingerprints);
             }
 
-            for entry in meta.fingerprints.keys() {
+            for (entry, hash) in meta.fingerprints.iter() {
                 if fingerprints.get(entry).is_none() {
                     let net_client = net_client.load().unwrap();
-                    net_client.write_packet(packet::PacketOut::DeliverFrame { file_name: entry.clone(), content: None, remaining_bytes: 0 }).unwrap();
+                    net_client.write_packet(packet::PacketOut::DeliverFrame { file_name: entry.clone(), content: None, remaining_bytes: 0, file_hash: *hash }).unwrap();
                     net_client.await_acknowledgement();
                 }
             }
@@ -200,6 +197,7 @@ fn send_by_path(conn: &mut MaybeNetClient, src_path: &str, old_hashes: &HashMap<
                         file_name: path.to_str().unwrap().to_string(),
                         content: Some(content),
                         remaining_bytes: initial_size - i * threshold,
+                        file_hash: new_hash,
                     })
                     .unwrap();
                 conn.await_acknowledgement();
@@ -213,6 +211,7 @@ fn send_by_path(conn: &mut MaybeNetClient, src_path: &str, old_hashes: &HashMap<
                     file_name: path.to_str().unwrap().to_string(),
                     content: Some(content),
                     remaining_bytes: 0,
+                    file_hash: new_hash,
                 })
                 .unwrap();
             conn.await_acknowledgement();

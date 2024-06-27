@@ -70,6 +70,7 @@ pub enum PacketIn {
     BackupRequest = 0x3,
     DeliverFrame {
         file_name: String,
+        file_hash: u64,
         content: Option<Vec<u8>>,
         remaining_bytes: u64,
     } = 0x4,
@@ -100,6 +101,7 @@ impl RWBytes for PacketIn {
             0x3 => Ok(Self::BackupRequest),
             0x4 => Ok(Self::DeliverFrame {
                 file_name: String::read(src)?,
+                file_hash: u64::read(src)?,
                 content: Option::<Vec<u8>>::read(src)?,
                 remaining_bytes: u64::read(src)?,
             }),
@@ -127,10 +129,12 @@ impl RWBytes for PacketIn {
             Self::FinishedBackup => Ok(()),
             Self::DeliverFrame {
                 file_name,
+                file_hash,
                 content,
                 remaining_bytes,
             } => {
                 file_name.write(dst)?;
+                file_hash.write(dst)?;
                 content.write(dst)?;
                 remaining_bytes.write(dst)
             }
