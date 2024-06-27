@@ -67,9 +67,9 @@ impl Storage {
                 }
                 let release_id = releases.get_latest().await?.id.to_string();
                 if let Some(content) = content {
-                    upload_asset_release(&client, name, token_hash, &release_id, file_name, content).await;
+                    upload_asset_release(&client, name, token_hash, &release_id, file_name, None, content).await;
                 } else {
-                    // FIXME: allow deleting assets
+                    upload_asset_release(&client, name, token_hash, &release_id, file_name, Some("delete"), &[]).await;
                 }
                 Ok(())
             },
@@ -86,6 +86,7 @@ pub async fn upload_asset_release(
     repo: &str,
     release_id: &str,
     asset_name: &str,
+    label: Option<&str>,
     data: &[u8]) {
     let release_upload_url = format!(
         "https://uploads.github.com/repos/{owner}/{repo}/releases/{release_id}/assets",
@@ -94,7 +95,13 @@ pub async fn upload_asset_release(
         release_id = release_id
     );
     let mut release_upload_url = url::Url::from_str(&release_upload_url).unwrap();
-    release_upload_url.set_query(Some(format!("{}={}", "name", asset_name).as_str()));
+    {
+        let mut query_pairs = release_upload_url.query_pairs_mut();
+        query_pairs.append_pair("name", asset_name);
+        if let Some(label) = label {
+            query_pairs.append_pair("label", label);
+        }
+    }
     println!("upload_url: {}", release_upload_url);
     println!(
         "file_size: {}. It can take some time to upload. Wait...",
