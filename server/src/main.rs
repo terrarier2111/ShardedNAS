@@ -37,6 +37,8 @@ mod storage;
 
 pub type Token = Vec<u8>;
 
+// FIXME: only store compressed and encrypted files
+
 #[tokio::main]
 async fn main() {
     fs::create_dir_all("./nas/tmp").unwrap();

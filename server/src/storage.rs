@@ -1,9 +1,10 @@
-use std::{fs::{self, OpenOptions}, io::Write, path::Path, str::FromStr};
+use std::{collections::HashSet, fs::{self, File, OpenOptions}, io::Write, path::Path, str::FromStr};
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike, Utc};
 use http::request::Builder;
 use octocrab::{repos::releases::MakeLatest, Octocrab};
 use reqwest::Method;
+use zip::ZipWriter;
 
 use crate::{config::Storage, utils::remove_path};
 
@@ -12,10 +13,12 @@ impl Storage {
     pub async fn save_file(&self, update_start: DateTime<Utc>, token_hash: &str, file_name: &str, content: Option<&[u8]>, remaining_bytes: u64) -> anyhow::Result<()> {
         match &self.method {
             crate::config::StorageMethod::LocalDisk => {
+                let time = format!("v{}.{}.{}.{}", update_start.year(), update_start.month(), update_start.day(), update_start.hour());
                 if let Some(parent) = Path::new(file_name).parent() {
                     fs::create_dir_all(format!(
-                        "./nas/instances/{}/storage/{}",
+                        "./nas/instances/{}/storage/{}/{}",
                         token_hash,
+                        &time,
                         parent.to_str().unwrap()
                     ))?;
                 }
@@ -41,7 +44,7 @@ impl Storage {
                             // replace original file
                             fs::copy(
                                 &tmp_path,
-                                &format!("./nas/instances/{}/storage/{}", token_hash, file_name),
+                                &format!("./nas/instances/{}/storage/{}/{}", token_hash, &time, file_name),
                             )?;
                             // clean up tmp file
                             fs::remove_file(&tmp_path)?;
@@ -49,8 +52,8 @@ impl Storage {
                     }
                     None => {
                         remove_path(&format!(
-                            "./nas/instances/{}/storage/{}",
-                            token_hash, file_name
+                            "./nas/instances/{}/storage/{}/{}",
+                            token_hash, &time, file_name
                         ))?;
                     }
                 }
@@ -76,6 +79,79 @@ impl Storage {
         }
     }
 
+    pub async fn try_recombine_backup(&self, token_hash: &str, latest_usable: u64, max_size: u64) -> Result<(), u64> {
+        match &self.method {
+            crate::config::StorageMethod::LocalDisk => {
+                let mut size = 0;
+                let mut computed = HashSet::new();
+                for delta in fs::read_dir(&format!("./nas/instances/{token_hash}/storage")).unwrap() {
+                    let name = delta.as_ref().unwrap().file_name();
+                    let name = name.to_str().unwrap();
+                    if parse_tag(name) <= latest_usable {
+                        calc_dir_size(&mut size, delta.unwrap().path(), &mut computed).unwrap();
+                    }
+                }
+                // FIXME: check size and construct backup zip if applicable
+                if size > max_size {
+                    return Err(size);
+                }
+                return Ok(());
+            },
+            crate::config::StorageMethod::Github { token, name } => {
+                let octocrab = Octocrab::builder().personal_token(token.to_string()).build().unwrap();
+                let mut assets = HashSet::new();
+                let mut size = 0;
+                for release in octocrab.repos(name, token_hash).releases().list().per_page(100).send().await.unwrap() {
+                    let date = release.tag_name;
+                        if parse_tag(&date) <= latest_usable {
+                            for asset in release.assets {
+                                if assets.insert(asset.name) {
+                                    size += asset.size as u64;
+                                }
+                            }
+                        }
+                }
+                if size > max_size {
+                    return Err(size);
+                }
+                let mut file = File::create_new(&format!("./nas/tmp/backups/{}.zip", token_hash)).unwrap();
+                let mut zip = ZipWriter::new(&mut file);
+                
+                // FIXME: check size and construct backup zip if applicable
+                Ok(())
+            },
+        }
+    }
+
+}
+
+fn parse_tag(tag: &str) -> u64 {
+    let (y, m, d, h) = {
+        let mut iter = (&tag[1..]).split('.');
+        let ret = (iter.next().unwrap().parse::<u32>().unwrap() as i32, iter.next().unwrap().parse::<u32>().unwrap(), iter.next().unwrap().parse::<u32>().unwrap(), iter.next().unwrap().parse::<u32>().unwrap());
+        assert!(iter.next().is_none());
+        ret
+    };
+    let date = NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(h, 0, 0).unwrap();
+    let date: DateTime<FixedOffset> = DateTime::from_naive_utc_and_offset(date, FixedOffset::west_opt(0).unwrap());
+    date.timestamp_millis() as u64
+}
+
+fn calc_dir_size<P: AsRef<Path>>(size: &mut u64, path: P, pre_computed: &mut HashSet<String>) -> anyhow::Result<()> {
+    if path.as_ref().is_file() {
+        if !pre_computed.insert(path.as_ref().to_str().unwrap().to_string()) {
+            return Ok(());
+        }
+        *size += path.as_ref().metadata()?.len();
+        return Ok(());
+    }
+    if path.as_ref().is_dir() {
+        for file in fs::read_dir(path)? {
+            calc_dir_size(size, file.unwrap().path(), pre_computed)?;
+        }
+        return Ok(());
+    }
+    unreachable!("Found unknown file type")
 }
 
 /// upload asset to github release
