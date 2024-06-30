@@ -1,12 +1,15 @@
-use std::{collections::HashSet, fs::{self, File, OpenOptions}, io::Write, path::Path, str::FromStr};
+use std::{collections::{HashMap, HashSet}, fs::{self, File, OpenOptions}, io::Write, path::Path, str::FromStr};
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike, Utc};
-use http::request::Builder;
+use http::{request::Builder, Uri};
+use http_body_util::BodyExt;
 use octocrab::{repos::releases::MakeLatest, Octocrab};
 use reqwest::Method;
-use zip::ZipWriter;
+use zip::{write::{FullFileOptions, SimpleFileOptions}, ZipWriter};
 
 use crate::{config::Storage, utils::remove_path};
+
+// FIXME: suupport file permissions (for UNIX)
 
 impl Storage {
 
@@ -98,24 +101,58 @@ impl Storage {
                 return Ok(());
             },
             crate::config::StorageMethod::Github { token, name } => {
-                let octocrab = Octocrab::builder().personal_token(token.to_string()).build().unwrap();
-                let mut assets = HashSet::new();
-                let mut size = 0;
+                let octocrab = Octocrab::builder().personal_token(token.to_string()).build().unwrap();                
+                let mut entries = HashMap::new();
                 for release in octocrab.repos(name, token_hash).releases().list().per_page(100).send().await.unwrap() {
                     let date = release.tag_name;
-                        if parse_tag(&date) <= latest_usable {
+                    let date_ms = parse_tag(&date);
+                        if date_ms <= latest_usable {
                             for asset in release.assets {
-                                if assets.insert(asset.name) {
-                                    size += asset.size as u64;
+                                if let Some((_, ms, _)) = entries.get(&asset.name) {
+                                    if date_ms < *ms {
+                                        continue;
+                                    }
                                 }
+                                entries.insert(asset.name, (asset.browser_download_url, date_ms, asset.size as u64));
                             }
                         }
+                }
+                let mut size = 0;
+                for (.., asset_size) in entries.values() {
+                    size += *asset_size;
                 }
                 if size > max_size {
                     return Err(size);
                 }
                 let mut file = File::create_new(&format!("./nas/tmp/backups/{}.zip", token_hash)).unwrap();
                 let mut zip = ZipWriter::new(&mut file);
+                let mut dirs = HashSet::new();
+                for path in entries.keys() {
+                    for p in Path::new(path).ancestors().skip(1) {
+                        // skip over "" and "/"
+                        if p.to_str().unwrap().is_empty() || p.to_str().unwrap() == "/" {
+                            break;
+                        }
+                        dirs.insert(p.to_str().unwrap().to_string());
+                    }
+                }
+
+                let mut dirs = dirs.into_iter().collect::<Vec<_>>();
+                dirs.sort_by(|first, second| first.chars().filter(|c| *c == '/').count().cmp(&second.chars().filter(|c| *c == '/').count()));
+                for dir in dirs {
+                    zip.add_directory_from_path(dir, SimpleFileOptions::default()).unwrap();
+                }
+                for (path, (url, date_ms, size)) in entries.iter() {
+                    const FOUR_GB: u64 = 1024 * 1024 * 1024 * 4;
+                    let dt = DateTime::from_timestamp_millis(*date_ms as i64).unwrap();
+                    let dt = zip::DateTime::from_date_and_time(dt.year() as u16, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8).unwrap();
+                    zip.start_file_from_path(path, FullFileOptions::default().large_file(*size >= FOUR_GB).last_modified_time(dt)).unwrap();
+                    let mut val = octocrab._post(Uri::from_str(url.as_str()).unwrap(), Option::<&()>::None).await.unwrap().into_body();
+                    while let Some(frame) = val.frame().await {
+                        zip.write_all(&frame.unwrap().into_data().unwrap()).unwrap();
+                    }
+                }
+                zip.finish().unwrap();
                 
                 // FIXME: check size and construct backup zip if applicable
                 Ok(())
