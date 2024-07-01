@@ -52,6 +52,8 @@ impl Config {
     }
 }
 
+const RSA_KEY_SIZE_BITS: usize = 4096;
+
 pub struct StorageEncyptionKey {
     pub key: RsaPrivateKey,
 }
@@ -67,8 +69,7 @@ impl StorageEncyptionKey {
     pub fn store_passwd(token_hash: &str, pw: &str) {
         let mut hasher = blake3::Hasher::new();
         hasher.update(pw.as_bytes());
-        // 4096 bit key
-        let mut key = [0; 4096 / 8];
+        let mut key = [0; RSA_KEY_SIZE_BITS / 8];
         hasher.finalize_xof().read(&mut key).unwrap();
         fs::write(&format!("./nas/istances/{token_hash}/storage.key"), &key).unwrap();
     }
@@ -78,8 +79,7 @@ impl StorageEncyptionKey {
 fn load_key(path: &str) -> RsaPrivateKey {
     if !Path::new(path).exists() {
         let mut rng = rand::thread_rng();
-        let bits = 4096;
-        let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+        let priv_key = RsaPrivateKey::new(&mut rng, RSA_KEY_SIZE_BITS).expect("failed to generate a key");
         fs::write(
             path,
             &priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(),

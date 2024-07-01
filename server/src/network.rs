@@ -357,7 +357,7 @@ impl PendingConn {
                     id: token,
                     conn: Arc::new(Mutex::new(self.conn)),
                     addr: self.addr,
-                    storage_key: if cfg.storage_passwd.is_none() { Some(StorageEncyptionKey::load()) } else { None },
+                    storage_key: if cfg.storage_passwd.is_none() { Some(StorageEncyptionKey::load(&token_str)) } else { None },
                     cfg: SwapIt::new(cfg),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                     shutdown: AtomicBool::new(false),
