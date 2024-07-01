@@ -21,7 +21,7 @@ use tokio::{
 };
 
 use crate::{
-    binary_to_hash, config::{MetaCfg, PartialUpdate, StorageEncyptionKey}, packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut}, protocol::PROTOCOL_VERSION, storage::EncryptionMode, utils::{current_time_millis, BasicNonce}, Server, Token
+    binary_to_hash, config::{MetaCfg, PartialUpdate, StorageEncyptionKey}, packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut}, protocol::PROTOCOL_VERSION, utils::{current_time_millis, BasicNonce}, Server, Token
 };
 
 pub struct NetworkServer {
@@ -152,7 +152,7 @@ impl Connection {
                         } else {
                             Utc::now()
                         };
-                        server.cfg.load().storage.save_file(self.storage_key.as_ref().map(|key| EncryptionMode::RSA(key)).unwrap_or_else(|| EncryptionMode::Password(meta.storage_passwd.as_ref().unwrap())), time, &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
+                        server.cfg.load().storage.save_file(self.storage_key.as_ref(), time, &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
                         meta.last_started_update.as_mut().unwrap().finished_files.insert(full_name, file_hash);
                         save_meta(&hash, &meta).unwrap();
 

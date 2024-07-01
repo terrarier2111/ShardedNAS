@@ -6,66 +6,43 @@ use http_body_util::BodyExt;
 use octocrab::{repos::releases::MakeLatest, Octocrab};
 use reqwest::Method;
 use rsa::{sha2::Sha512_256, Oaep};
-use zip::{write::{FullFileOptions, SimpleFileOptions}, AesMode, CompressionMethod, ZipArchive, ZipWriter};
+use zip::{write::{FullFileOptions, SimpleFileOptions}, CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::{config::{Storage, StorageEncyptionKey}, utils::remove_path};
 
 // FIXME: support file permissions (for UNIX)
 
-pub(crate) enum EncryptionMode<'a> {
-    Password(&'a str),
-    RSA(&'a StorageEncyptionKey),
+fn compress_and_encrypt(raw: &[u8], file_name: &str, key: Option<&StorageEncyptionKey>) -> anyhow::Result<Vec<u8>> {
+    let mut storage = Cursor::new(vec![]);
+    let mut zip = ZipWriter::new(&mut storage);
+    zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true))?;
+    zip.write_all(raw)?;
+    zip.finish()?;
+    let content = storage.into_inner();
+    if let Some(key) = key {
+        let mut rng = rand::thread_rng();
+        let enc = key.key.to_public_key().encrypt(&mut rng, Oaep::new::<Sha512_256>(), &content)?;
+        Ok(enc)
+    } else {
+        Ok(content)
+    }
 }
 
-impl<'a> EncryptionMode<'a> {
-
-    fn compress_and_encrypt(&self, raw: &[u8], file_name: &str) -> anyhow::Result<Vec<u8>> {
-        match self {
-            EncryptionMode::Password(pw) => {
-                let mut storage = Cursor::new(vec![]);
-                let mut zip = ZipWriter::new(&mut storage);
-                zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true).with_aes_encryption(AesMode::Aes256, pw))?;
-                zip.write_all(raw)?;
-                zip.finish()?;
-                let content = storage.into_inner();
-                Ok(content)
-            },
-            EncryptionMode::RSA(key) => {
-                let mut storage = Cursor::new(vec![]);
-                let mut zip = ZipWriter::new(&mut storage);
-                zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true))?;
-                zip.write_all(raw)?;
-                zip.finish()?;
-                let content = storage.into_inner();
-                let mut rng = rand::thread_rng();
-                let enc = key.key.to_public_key().encrypt(&mut rng, Oaep::new::<Sha512_256>(), &content)?;
-                Ok(enc)
-            },
-        }
+fn decompress_and_decrypt(raw: &[u8], key: Option<&StorageEncyptionKey>) -> anyhow::Result<Vec<u8>> {
+    let mut zip_archive = ZipArchive::new(Cursor::new(raw))?;
+    let file = zip_archive.by_index(0)?;
+    let bytes = file.bytes().try_collect::<Vec<u8>>()?;
+    if let Some(key) = key {
+        Ok(key.key.decrypt(Oaep::new::<Sha512_256>(), &bytes)?)
+    } else {
+        Ok(bytes)
     }
-
-    fn decompress_and_decrypt(&self, raw: &[u8], token_hash: &str) -> anyhow::Result<Vec<u8>> {
-        let path = format!("./nas/tmp/{token_hash}_dload.zip");
-        fs::write(&path, raw)?;
-        match self {
-            EncryptionMode::Password(passwd) => {
-                todo!()
-            },
-            EncryptionMode::RSA(key) => {
-                let mut zip_archive = ZipArchive::new(OpenOptions::new().read(true).open(&path)?)?;
-                let file = zip_archive.by_index(0)?;
-                let bytes = file.bytes().try_collect::<Vec<u8>>()?;
-                Ok(key.key.decrypt(Oaep::new::<Sha512_256>(), &bytes)?)
-            },
-        }
-    }
-
 }
 
 impl Storage {
 
-    pub(crate) async fn save_file(&self, key: EncryptionMode<'_>, update_start: DateTime<Utc>, token_hash: &str, file_name: &str, content: Option<&[u8]>, remaining_bytes: u64) -> anyhow::Result<()> {
-        let content = content.map(|raw| key.compress_and_encrypt(raw, file_name).unwrap());
+    pub(crate) async fn save_file(&self, key: Option<&StorageEncyptionKey>, update_start: DateTime<Utc>, token_hash: &str, file_name: &str, content: Option<&[u8]>, remaining_bytes: u64) -> anyhow::Result<()> {
+        let content = content.map(|raw| compress_and_encrypt(raw, file_name, key).unwrap());
         let content = content.as_deref();
         match &self.method {
             crate::config::StorageMethod::LocalDisk => {
@@ -135,7 +112,7 @@ impl Storage {
         }
     }
 
-    pub(crate) async fn try_recombine_backup(&self, key: EncryptionMode<'_>, token_hash: &str, latest_usable: u64, max_size: u64) -> Result<(), u64> {
+    pub(crate) async fn try_recombine_backup(&self, key: Option<&StorageEncyptionKey>, token_hash: &str, latest_usable: u64, max_size: u64) -> Result<(), u64> {
         match &self.method {
             crate::config::StorageMethod::LocalDisk => {
                 let mut size = 0;
@@ -202,7 +179,8 @@ impl Storage {
                     zip.start_file_from_path(path, FullFileOptions::default().large_file(*size >= FOUR_GB).last_modified_time(dt)).unwrap();
                     let mut val = octocrab._post(Uri::from_str(url.as_str()).unwrap(), Option::<&()>::None).await.unwrap().into_body();
                     while let Some(frame) = val.frame().await {
-                        zip.write_all(&frame.unwrap().into_data().unwrap()).unwrap();
+                        let data = decompress_and_decrypt(&&frame.unwrap().into_data().unwrap(), key).unwrap();
+                        zip.write_all(&data).unwrap();
                     }
                 }
                 zip.finish().unwrap();
