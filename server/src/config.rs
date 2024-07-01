@@ -58,10 +58,14 @@ pub struct StorageEncyptionKey {
 
 impl StorageEncyptionKey {
 
-    pub fn load() -> Self {
+    pub fn load(token_hash: &str) -> Self {
         Self {
-            key: load_key("./nas/storage.key"),
+            key: load_key(&format!("./nas/instances/{token_hash}/storage.key")),
         }
+    }
+
+    pub fn store_passwd(token_hash: &str, pw: &str) {
+        
     }
 
 }

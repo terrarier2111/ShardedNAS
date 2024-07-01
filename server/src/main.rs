@@ -54,7 +54,10 @@ async fn main() {
                     ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(vec![
                         (
                             "register",
-                            EnumVal::Complex(UsageBuilder::new().optional(CommandParam {
+                            EnumVal::Complex(UsageBuilder::new().required(CommandParam {
+                                name: "encryption",
+                                ty: CommandParamTy::Enum(CmdParamEnumConstraints::IgnoreCase(vec![("none", EnumVal::None), ("password", EnumVal::Simple(CommandParamTy::String(CmdParamStrConstraints::Range(8..usize::MAX)))), ("key", EnumVal::None)]))
+                            }).optional(CommandParam {
                                 name: "name",
                                 ty: CommandParamTy::String(CmdParamStrConstraints::None),
                             })),
@@ -93,9 +96,7 @@ async fn main() {
         cfg: SwapIt::new(cfg),
         cli: cli.clone(),
         key: NetworkEncryptionKey::load(),
-        storage_key: StorageEncyptionKey::load(),
     });
-    cli.println("The storage encryption key is stored at \"./nas/storage.key\", please ensure that you store it on a seperate medium in order to ensure that backups will remain readable even after the key on this server gets damaged or lost.");
     server.network.listen_login(server.clone()).await;
     let srv = server.clone();
     thread::spawn(move || {
@@ -120,7 +121,6 @@ pub struct Server {
     running: AtomicBool,
     cfg: SwapIt<Config>,
     key: NetworkEncryptionKey,
-    storage_key: StorageEncyptionKey,
     network: NetworkServer,
     cli: Arc<CmdLineInterface<Arc<Server>>>,
 }
@@ -171,6 +171,7 @@ impl CommandImpl for CmdTokens {
     fn execute(&self, ctx: &Self::CTX, input: &[&str]) -> anyhow::Result<()> {
         match input[0] {
             "register" => {
+                // FIXME: impl encryption parameter and make it optional
                 let name = input.get(1).map(|name| name.to_string());
                 let (token, priv_key) = ctx.gen_token();
                 let token_str = binary_to_hash(&token);
