@@ -1,19 +1,77 @@
-use std::{collections::{HashMap, HashSet}, fs::{self, File, OpenOptions}, io::Write, path::Path, str::FromStr};
+use std::{collections::{HashMap, HashSet}, fs::{self, File, OpenOptions}, io::{Read, Write}, path::Path, str::FromStr};
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike, Utc};
 use http::{request::Builder, Uri};
 use http_body_util::BodyExt;
 use octocrab::{repos::releases::MakeLatest, Octocrab};
 use reqwest::Method;
-use zip::{write::{FullFileOptions, SimpleFileOptions}, ZipWriter};
+use rsa::{sha2::Sha512_256, Oaep};
+use zip::{write::{FullFileOptions, SimpleFileOptions}, AesMode, CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::{config::Storage, utils::remove_path};
+use crate::{config::{Storage, StorageEncyptionKey}, utils::remove_path};
 
 // FIXME: suupport file permissions (for UNIX)
 
+pub(crate) enum EncryptionMode<'a> {
+    Password(&'a str),
+    RSA(&'a StorageEncyptionKey),
+}
+
+impl<'a> EncryptionMode<'a> {
+
+    // FIXME: reduce amount of disk IO
+
+    fn compress_and_encrypt(&self, raw: &[u8], file_name: &str, token_hash: &str) -> anyhow::Result<Vec<u8>> {
+        let path = format!("./nas/tmp/{token_hash}_upload.zip");
+        match self {
+            EncryptionMode::Password(pw) => {
+                let mut file = File::create_new(&path)?;
+                let mut zip = ZipWriter::new(&mut file);
+                zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true).with_aes_encryption(AesMode::Aes256, pw))?;
+                zip.write_all(raw)?;
+                zip.finish()?;
+                let content = fs::read(&path)?;
+                fs::remove_file(&path)?;                
+                Ok(content)
+            },
+            EncryptionMode::RSA(key) => {
+                let mut file = File::create_new(&path)?;
+                let mut zip = ZipWriter::new(&mut file);
+                zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true))?;
+                zip.write_all(raw)?;
+                zip.finish()?;
+                let content = fs::read(&path)?;
+                fs::remove_file(&path)?;
+                let mut rng = rand::thread_rng();
+                let enc = key.key.to_public_key().encrypt(&mut rng, Oaep::new::<Sha512_256>(), &content)?;
+                Ok(enc)
+            },
+        }
+    }
+
+    fn decompress_and_decrypt(&self, raw: &[u8], token_hash: &str) -> anyhow::Result<Vec<u8>> {
+        let path = format!("./nas/tmp/{token_hash}_dload.zip");
+        fs::write(&path, raw)?;
+        match self {
+            EncryptionMode::Password(passwd) => {
+                todo!()
+            },
+            EncryptionMode::RSA(key) => {
+                let mut zip_archive = ZipArchive::new(OpenOptions::new().read(true).open(&path)?)?;
+                let file = zip_archive.by_index(0)?;
+                let bytes = file.bytes().try_collect::<Vec<u8>>()?;
+                Ok(key.key.decrypt(Oaep::new::<Sha512_256>(), &bytes)?)
+            },
+        }
+    }
+
+}
+
 impl Storage {
 
-    pub async fn save_file(&self, update_start: DateTime<Utc>, token_hash: &str, file_name: &str, content: Option<&[u8]>, remaining_bytes: u64) -> anyhow::Result<()> {
+    pub(crate) async fn save_file(&self, key: EncryptionMode<'_>, update_start: DateTime<Utc>, token_hash: &str, file_name: &str, content: Option<&[u8]>, remaining_bytes: u64) -> anyhow::Result<()> {
+        let content = content.map(|raw| key.compress_and_encrypt(raw, file_name, token_hash).unwrap());
+        let content = content.as_deref();
         match &self.method {
             crate::config::StorageMethod::LocalDisk => {
                 let time = format!("v{}.{}.{}.{}", update_start.year(), update_start.month(), update_start.day(), update_start.hour());
@@ -82,7 +140,7 @@ impl Storage {
         }
     }
 
-    pub async fn try_recombine_backup(&self, token_hash: &str, latest_usable: u64, max_size: u64) -> Result<(), u64> {
+    pub(crate) async fn try_recombine_backup(&self, key: EncryptionMode<'_>, token_hash: &str, latest_usable: u64, max_size: u64) -> Result<(), u64> {
         match &self.method {
             crate::config::StorageMethod::LocalDisk => {
                 let mut size = 0;

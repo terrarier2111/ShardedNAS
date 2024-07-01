@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, fs::{self, OpenOptions}, io::Write, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, path::Path, sync::{
+    collections::HashMap, fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, ops::DerefMut, sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     }, time::Duration
@@ -21,12 +21,7 @@ use tokio::{
 };
 
 use crate::{
-    binary_to_hash,
-    config::{MetaCfg, PartialUpdate},
-    packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut},
-    protocol::PROTOCOL_VERSION,
-    utils::{current_time_millis, remove_path, BasicNonce},
-    Server, Token,
+    binary_to_hash, config::{MetaCfg, PartialUpdate, StorageEncyptionKey}, packet::{read_full_packet, read_full_packet_rsa, write_full_packet, PacketIn, PacketOut}, protocol::PROTOCOL_VERSION, storage::EncryptionMode, utils::{current_time_millis, BasicNonce}, Server, Token
 };
 
 pub struct NetworkServer {
@@ -71,6 +66,7 @@ impl NetworkServer {
 pub struct Connection {
     pub id: Token,
     cfg: SwapIt<MetaCfg>,
+    storage_key: Option<StorageEncyptionKey>,
     conn: Arc<Mutex<TcpStream>>,
     pub addr: SocketAddr,
     encrypt_key: Mutex<SealingKey<BasicNonce>>,
@@ -156,7 +152,7 @@ impl Connection {
                         } else {
                             Utc::now()
                         };
-                        server.cfg.load().storage.save_file(time, &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
+                        server.cfg.load().storage.save_file(self.storage_key.as_ref().map(|key| EncryptionMode::RSA(key)).unwrap_or_else(|| EncryptionMode::Password(meta.storage_passwd.as_ref().unwrap())), time, &hash, &file_name, content.as_deref(), remaining_bytes).await.unwrap();
                         meta.last_started_update.as_mut().unwrap().finished_files.insert(full_name, file_hash);
                         save_meta(&hash, &meta).unwrap();
 
@@ -361,6 +357,7 @@ impl PendingConn {
                     id: token,
                     conn: Arc::new(Mutex::new(self.conn)),
                     addr: self.addr,
+                    storage_key: if cfg.storage_passwd.is_none() { Some(StorageEncyptionKey::load()) } else { None },
                     cfg: SwapIt::new(cfg),
                     last_keep_alive: AtomicU64::new(current_time_millis() as u64),
                     shutdown: AtomicBool::new(false),

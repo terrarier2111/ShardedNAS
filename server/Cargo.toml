@@ -23,5 +23,5 @@ reqwest = { version = "0.12", features = ["stream"] }
 url = "2"
 http = "1"
 chrono = "0.4"
-zip = "2"
+zip = { version = "2", features = ["aes-crypto"] }
 http-body-util = "0.1"

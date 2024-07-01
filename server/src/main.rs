@@ -1,4 +1,5 @@
 #![feature(duration_constructors)]
+#![feature(iterator_try_collect)]
 
 use std::{
     fs,
@@ -18,7 +19,7 @@ use clitty::{
     },
     ui::{CLIBuilder, CmdLineInterface, PrintFallback},
 };
-use config::{Config, EncryptionKey, MetaCfg, RegisterCfg};
+use config::{Config, MetaCfg, NetworkEncryptionKey, RegisterCfg, StorageEncyptionKey};
 use network::NetworkServer;
 use rand::Rng;
 use rsa::{
@@ -37,7 +38,7 @@ mod storage;
 
 pub type Token = Vec<u8>;
 
-// FIXME: only store compressed and encrypted files
+// FIXME: refactor compression and encryption system
 
 #[tokio::main]
 async fn main() {
@@ -91,8 +92,10 @@ async fn main() {
         network: NetworkServer::new(cfg.port).await,
         cfg: SwapIt::new(cfg),
         cli: cli.clone(),
-        key: EncryptionKey::load(),
+        key: NetworkEncryptionKey::load(),
+        storage_key: StorageEncyptionKey::load(),
     });
+    cli.println("The storage encryption key is stored at \"./nas/storage.key\", please ensure that you store it on a seperate medium in order to ensure that backups will remain readable even after the key on this server gets damaged or lost.");
     server.network.listen_login(server.clone()).await;
     let srv = server.clone();
     thread::spawn(move || {
@@ -116,7 +119,8 @@ async fn main() {
 pub struct Server {
     running: AtomicBool,
     cfg: SwapIt<Config>,
-    key: EncryptionKey,
+    key: NetworkEncryptionKey,
+    storage_key: StorageEncyptionKey,
     network: NetworkServer,
     cli: Arc<CmdLineInterface<Arc<Server>>>,
 }
@@ -180,6 +184,7 @@ impl CommandImpl for CmdTokens {
                             name,
                             last_finished_update: 0,
                             last_started_update: None,
+                            storage_passwd: None,
                         })
                         .unwrap()
                         .as_bytes(),

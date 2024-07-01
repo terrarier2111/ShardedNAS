@@ -16,6 +16,8 @@ pub struct Config {
     pub connect_timeout_ms: u64,
     pub read_timeout_ms: u64,
     pub max_frame_size_b: u64,
+    pub max_file_size_b: u64,
+    // FIXME: make storage config per-token and not global, but keep a global default
     pub storage: Storage,
     // FIXME: add seperate registry for tokens (and don't modify config)
     pub tokens: HashSet<Token>,
@@ -39,6 +41,7 @@ impl Config {
                     connect_timeout_ms: 15000,
                     read_timeout_ms: 30000,
                     max_frame_size_b: 1024 * 1024 * 64,
+                    max_file_size_b: 1024 * 1024 * 1024 * 8,
                     storage: Storage { method: StorageMethod::LocalDisk, gen_delta: false },
                 })
                 .unwrap(),
@@ -49,26 +52,42 @@ impl Config {
     }
 }
 
-pub struct EncryptionKey {
+pub struct StorageEncyptionKey {
     pub key: RsaPrivateKey,
 }
 
-impl EncryptionKey {
-    const PATH: &'static str = "./nas/private.key";
+impl StorageEncyptionKey {
 
     pub fn load() -> Self {
-        if !Path::new(Self::PATH).exists() {
-            let mut rng = rand::thread_rng();
-            let bits = 4096;
-            let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
-            fs::write(
-                Self::PATH,
-                &priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(),
-            )
-            .unwrap();
-        }
         Self {
-            key: RsaPrivateKey::from_pkcs1_der(&fs::read(Self::PATH).unwrap()).unwrap(),
+            key: load_key("./nas/storage.key"),
+        }
+    }
+
+}
+
+fn load_key(path: &str) -> RsaPrivateKey {
+    if !Path::new(path).exists() {
+        let mut rng = rand::thread_rng();
+        let bits = 4096;
+        let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+        fs::write(
+            path,
+            &priv_key.to_pkcs1_der().unwrap().to_bytes().to_vec(),
+        )
+        .unwrap();
+    }
+    RsaPrivateKey::from_pkcs1_der(&fs::read(path).unwrap()).unwrap()
+}
+
+pub struct NetworkEncryptionKey {
+    pub key: RsaPrivateKey,
+}
+
+impl NetworkEncryptionKey {
+    pub fn load() -> Self {
+        Self {
+            key: load_key("./nas/network_priv.key"),
         }
     }
 }
@@ -94,6 +113,7 @@ pub struct MetaCfg {
     pub last_started_update: Option<PartialUpdate>,
     pub pub_key: Vec<u8>,
     pub name: Option<String>,
+    pub storage_passwd: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
