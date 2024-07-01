@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, fs, path::Path, time::Duration};
+use std::{collections::{HashMap, HashSet}, fs, io::Read, path::Path, time::Duration};
 
 use bytes::BytesMut;
 use rsa::{
@@ -65,7 +65,12 @@ impl StorageEncyptionKey {
     }
 
     pub fn store_passwd(token_hash: &str, pw: &str) {
-        
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(pw.as_bytes());
+        // 4096 bit key
+        let mut key = [0; 4096 / 8];
+        hasher.finalize_xof().read(&mut key).unwrap();
+        fs::write(&format!("./nas/istances/{token_hash}/storage.key"), &key).unwrap();
     }
 
 }
