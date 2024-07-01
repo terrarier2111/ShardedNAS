@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, fs::{self, File, OpenOptions}, io::{Read, Write}, path::Path, str::FromStr};
+use std::{collections::{HashMap, HashSet}, fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::Path, str::FromStr};
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike, Utc};
 use http::{request::Builder, Uri};
@@ -10,7 +10,7 @@ use zip::{write::{FullFileOptions, SimpleFileOptions}, AesMode, CompressionMetho
 
 use crate::{config::{Storage, StorageEncyptionKey}, utils::remove_path};
 
-// FIXME: suupport file permissions (for UNIX)
+// FIXME: support file permissions (for UNIX)
 
 pub(crate) enum EncryptionMode<'a> {
     Password(&'a str),
@@ -19,29 +19,24 @@ pub(crate) enum EncryptionMode<'a> {
 
 impl<'a> EncryptionMode<'a> {
 
-    // FIXME: reduce amount of disk IO
-
-    fn compress_and_encrypt(&self, raw: &[u8], file_name: &str, token_hash: &str) -> anyhow::Result<Vec<u8>> {
-        let path = format!("./nas/tmp/{token_hash}_upload.zip");
+    fn compress_and_encrypt(&self, raw: &[u8], file_name: &str) -> anyhow::Result<Vec<u8>> {
         match self {
             EncryptionMode::Password(pw) => {
-                let mut file = File::create_new(&path)?;
-                let mut zip = ZipWriter::new(&mut file);
+                let mut storage = Cursor::new(vec![]);
+                let mut zip = ZipWriter::new(&mut storage);
                 zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true).with_aes_encryption(AesMode::Aes256, pw))?;
                 zip.write_all(raw)?;
                 zip.finish()?;
-                let content = fs::read(&path)?;
-                fs::remove_file(&path)?;                
+                let content = storage.into_inner();
                 Ok(content)
             },
             EncryptionMode::RSA(key) => {
-                let mut file = File::create_new(&path)?;
-                let mut zip = ZipWriter::new(&mut file);
+                let mut storage = Cursor::new(vec![]);
+                let mut zip = ZipWriter::new(&mut storage);
                 zip.start_file(file_name, FullFileOptions::default().compression_method(CompressionMethod::Bzip2).large_file(true))?;
                 zip.write_all(raw)?;
                 zip.finish()?;
-                let content = fs::read(&path)?;
-                fs::remove_file(&path)?;
+                let content = storage.into_inner();
                 let mut rng = rand::thread_rng();
                 let enc = key.key.to_public_key().encrypt(&mut rng, Oaep::new::<Sha512_256>(), &content)?;
                 Ok(enc)
@@ -70,7 +65,7 @@ impl<'a> EncryptionMode<'a> {
 impl Storage {
 
     pub(crate) async fn save_file(&self, key: EncryptionMode<'_>, update_start: DateTime<Utc>, token_hash: &str, file_name: &str, content: Option<&[u8]>, remaining_bytes: u64) -> anyhow::Result<()> {
-        let content = content.map(|raw| key.compress_and_encrypt(raw, file_name, token_hash).unwrap());
+        let content = content.map(|raw| key.compress_and_encrypt(raw, file_name).unwrap());
         let content = content.as_deref();
         match &self.method {
             crate::config::StorageMethod::LocalDisk => {
